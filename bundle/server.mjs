@@ -27299,7 +27299,7 @@ var init_config = __esm({
     baseDataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), "data");
     config = {
       port: parseInt(process.env.PORT || "7682", 10),
-      host: process.env.HOST || "127.0.0.1",
+      host: process.env.HOST || (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1"),
       dataDir: baseDataDir,
       projectsDir: path.join(baseDataDir, "projects"),
       chatsDir: path.join(baseDataDir, "chats"),
@@ -29984,7 +29984,7 @@ function startServer(port = config.port, host = config.host) {
 if (process.argv[1]) {
   try {
     const currentFile = fileURLToPath(import.meta.url);
-    const isDirectRun = path11.resolve(process.argv[1]) === currentFile || path11.basename(process.argv[1]).includes("server") || path11.basename(process.argv[1]).includes("remote") || process.env.REMOTE_AUTO_START === "1";
+    const isDirectRun = Boolean(process.env.pm_id) || Boolean(process.env.PM2_HOME) || process.env.REMOTE_AUTO_START === "1" || path11.resolve(process.argv[1]) === currentFile || path11.basename(process.argv[1]).includes("server") || path11.basename(process.argv[1]).includes("remote") || path11.basename(process.argv[1]).includes("ProcessContainer") || path11.basename(process.argv[1]).includes("index");
     if (isDirectRun) {
       startServer();
     }
