@@ -104,7 +104,7 @@ def main():
                 os.kill(pid, signal.SIGKILL)
             except:
                 pass
-            sys.exit(0)
+            sys.exit(1)
 
         auth_code = line.strip()
         if not auth_code:
@@ -147,6 +147,11 @@ def main():
             os.kill(pid, signal.SIGTERM)
         except:
             pass
+
+        if success:
+            sys.exit(0)
+        else:
+            sys.exit(1)
 
 if __name__ == '__main__':
     main()

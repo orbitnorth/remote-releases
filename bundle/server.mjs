@@ -28345,7 +28345,7 @@ def main():
         if not line:
             try: os.kill(pid, signal.SIGKILL)
             except: pass
-            sys.exit(0)
+            sys.exit(1)
 
         auth_code = line.strip()
         if not auth_code:
@@ -28356,6 +28356,7 @@ def main():
         os.write(master, auth_code.encode('utf-8') + b"\\r\\n")
         completion_buf = ""
         done_time = time.time()
+        success = False
         while time.time() - done_time < 15:
             r, _, _ = select.select([master], [], [], 0.5)
             if r:
@@ -28364,13 +28365,19 @@ def main():
                     if not c: break
                     completion_buf += c
                     low = completion_buf.lower()
-                    if "success" in low or "logged in" in low or "welcome" in low or "authenticated" in low: break
+                    if "success" in low or "logged in" in low or "welcome" in low or "authenticated" in low:
+                        success = True
+                        break
                     if "error" in low or "failed" in low or "invalid" in low: break
                 except: break
         time.sleep(1)
         print("LOGIN_OUTPUT:\\n" + completion_buf, flush=True)
         try: os.kill(pid, signal.SIGTERM)
         except: pass
+        if success:
+            sys.exit(0)
+        else:
+            sys.exit(1)
 
 if __name__ == '__main__':
     main()
@@ -28624,7 +28631,8 @@ if __name__ == '__main__':
       child.stdout?.on("data", onData);
       child.stderr?.on("data", onData);
       child.on("exit", async (code) => {
-        if (code === 0) {
+        const status = await this.checkAccountStatus("antigravity");
+        if (code === 0 && status.signedIn) {
           session.status = "completed";
           session.message = "Successfully authenticated with Google / Antigravity account!";
           const creds = await this.getAllCredentials();
@@ -28638,7 +28646,7 @@ if __name__ == '__main__':
           await JsonStore.write(this.getCredentialsPath(), creds);
         } else if (session.status !== "completed") {
           session.status = "failed";
-          session.error = `Google OAuth login exited with code ${code}`;
+          session.error = code === 0 ? "Authentication could not be verified" : `Google OAuth login exited with code ${code}`;
         }
       });
       entry.timeout = setTimeout(() => {
