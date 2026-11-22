@@ -37,7 +37,7 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "/tmp")"
 
 # 2. Detect Public IP
 PUBLIC_IP=$(curl -s4 --max-time 4 https://ifconfig.me || curl -s4 --max-time 4 https://api.ipify.org || echo "YOUR-SERVER-IP")
