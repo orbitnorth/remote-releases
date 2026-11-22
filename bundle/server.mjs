@@ -30279,6 +30279,12 @@ function createServer() {
   const app = (0, import_express2.default)();
   app.use((0, import_cors.default)());
   app.use(import_express2.default.json());
+  app.use((err, _req, res, next) => {
+    if (err instanceof SyntaxError && "body" in err) {
+      return res.status(400).json({ error: "Invalid JSON payload" });
+    }
+    next(err);
+  });
   app.use("/api", createApiRouter());
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", name: "remote-backend", version: "0.1.0" });
