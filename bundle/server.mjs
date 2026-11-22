@@ -28012,13 +28012,14 @@ var init_credentialService = __esm({
           let buffer = "";
           const onData = (data) => {
             buffer += data.toString();
-            const urlMatch = buffer.match(/https:\/\/[^\s"'<>]+/);
-            const codeMatch = buffer.match(/([A-Z0-9]{4,5}-[A-Z0-9]{4,5})/);
+            const clean = buffer.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+            const urlMatch = clean.match(/https:\/\/[^\s"'<>\x1b]+/);
+            const codeMatch = clean.match(/([A-Z0-9]{4,5}-[A-Z0-9]{4,5})/);
             if (urlMatch && !session.authUrl) {
-              session.authUrl = urlMatch[0];
+              session.authUrl = urlMatch[0].trim();
             }
             if (codeMatch && !session.userCode) {
-              session.userCode = codeMatch[0];
+              session.userCode = codeMatch[0].trim();
             }
           };
           child.stdout?.on("data", onData);
@@ -28081,9 +28082,10 @@ var init_credentialService = __esm({
           let buffer = "";
           const onData = (data) => {
             buffer += data.toString();
-            const urlMatch = buffer.match(/https:\/\/claude\.ai\/oauth\/authorize\S+/);
+            const clean = buffer.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+            const urlMatch = clean.match(/https:\/\/claude\.ai\/oauth\/authorize[^\s"'<>\x1b]+/);
             if (urlMatch && !session.authUrl) {
-              session.authUrl = urlMatch[0];
+              session.authUrl = urlMatch[0].trim();
               session.status = "awaiting_code";
             }
           };
