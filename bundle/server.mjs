@@ -28169,21 +28169,29 @@ var CredentialService = class {
       });
     }
     if (provider === "antigravity") {
+      const homeDir = process.env.HOME || os.homedir() || "/root";
+      const tokenPath = path8.join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+      if (fsSync7.existsSync(tokenPath)) {
+        try {
+          const content = JSON.parse(fsSync7.readFileSync(tokenPath, "utf-8"));
+          if (content.token?.access_token || content.token?.refresh_token) {
+            return {
+              signedIn: true,
+              email: content.id_token_email || "Google Account Active",
+              name: "Google Antigravity Subscription"
+            };
+          }
+        } catch {
+        }
+      }
       const creds2 = await this.getAllCredentials();
       if (creds2["account_antigravity"]?.signedIn) {
-        const token = creds2["account_antigravity"]?.token;
-        if (!token) {
-          delete creds2["account_antigravity"];
-          await JsonStore.write(this.getCredentialsPath(), creds2);
-          return { signedIn: false };
-        }
         return {
           signedIn: true,
           email: creds2["account_antigravity"].email || "Google Account / Antigravity Active",
           name: "Antigravity Google Account"
         };
       }
-      const homeDir = process.env.HOME || os.homedir() || "/root";
       return new Promise((resolve) => {
         exec2(
           "agy models",
@@ -28798,6 +28806,16 @@ if __name__ == '__main__':
         await new Promise((resolve) => {
           exec2(def.logoutCommand, { timeout: 3e3 }, () => resolve());
         });
+      }
+    }
+    if (provider === "antigravity") {
+      const homeDir = process.env.HOME || os.homedir() || "/root";
+      const tokenPath = path8.join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+      if (fsSync7.existsSync(tokenPath)) {
+        try {
+          fsSync7.unlinkSync(tokenPath);
+        } catch {
+        }
       }
     }
     return {
