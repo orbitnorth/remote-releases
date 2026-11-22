@@ -30072,7 +30072,7 @@ var PromptService = class {
   /**
    * Starts an agent run for a chat.
    */
-  static async startPrompt(chatId, promptText) {
+  static async startPrompt(chatId, promptText, providerOverride) {
     const chat = await ChatService.getChat(chatId);
     if (!chat) {
       throw new Error(`Chat not found: ${chatId}`);
@@ -30081,6 +30081,11 @@ var PromptService = class {
     if (!project) {
       throw new Error(`Project not found: ${chat.projectId}`);
     }
+    const providerToUse = providerOverride || chat.provider;
+    if (providerOverride && providerOverride !== chat.provider) {
+      await ChatService.updateChat(chatId, { provider: providerOverride });
+      chat.provider = providerOverride;
+    }
     const abortController = RunHub.startRun(chatId);
     await ChatService.updateChat(chatId, {
       running: true,
@@ -30088,10 +30093,11 @@ var PromptService = class {
     });
     await RunHub.dispatch(chatId, {
       type: "prompt",
-      text: promptText
+      text: promptText,
+      provider: providerToUse
     });
     const workspacePath = WorkspaceService.getWorkspacePath(project.slug);
-    const harness = HarnessRegistry.get(chat.provider);
+    const harness = HarnessRegistry.get(providerToUse);
     (async () => {
       try {
         await harness.run({
@@ -30101,7 +30107,7 @@ var PromptService = class {
           prompt: promptText,
           model: chat.model,
           mode: chat.mode,
-          provider: chat.provider,
+          provider: providerToUse,
           signal: abortController.signal,
           onEvent: async (ev) => {
             await RunHub.dispatch(chatId, ev);
@@ -30194,7 +30200,7 @@ function setupChatWebSocket(wss) {
           try {
             const msg = JSON.parse(data.toString());
             if (msg.type === "prompt") {
-              await PromptService.startPrompt(chatId, msg.text);
+              await PromptService.startPrompt(chatId, msg.text, msg.provider);
             } else if (msg.type === "cancel") {
               PromptService.cancelPrompt(chatId);
             }
