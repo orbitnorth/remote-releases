@@ -11,24 +11,12 @@ var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require
   if (typeof require !== "undefined") return require.apply(this, arguments);
   throw Error('Dynamic require of "' + x + '" is not supported');
 });
-var __esm = (fn, res, err) => function __init() {
-  if (err) throw err[0];
-  try {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  } catch (e) {
-    throw err = [e], e;
-  }
-};
 var __commonJS = (cb, mod) => function __require2() {
   try {
     return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   } catch (e) {
     throw mod = 0, e;
   }
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -27282,1720 +27270,6 @@ var require_websocket_server = __commonJS({
   }
 });
 
-// packages/backend/src/config.ts
-import path from "path";
-import fs from "fs";
-function ensureBaseDirs() {
-  for (const dir of [config.dataDir, config.projectsDir, config.chatsDir, config.workspacesDir]) {
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  }
-}
-var baseDataDir, config;
-var init_config = __esm({
-  "packages/backend/src/config.ts"() {
-    "use strict";
-    baseDataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), "data");
-    config = {
-      port: parseInt(process.env.PORT || "7682", 10),
-      host: process.env.HOST || (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1"),
-      dataDir: baseDataDir,
-      projectsDir: path.join(baseDataDir, "projects"),
-      chatsDir: path.join(baseDataDir, "chats"),
-      workspacesDir: path.join(baseDataDir, "workspaces")
-    };
-  }
-});
-
-// packages/backend/src/storage/jsonStore.ts
-import fs2 from "fs/promises";
-import fsSync from "fs";
-import path2 from "path";
-import crypto from "crypto";
-var JsonStore;
-var init_jsonStore = __esm({
-  "packages/backend/src/storage/jsonStore.ts"() {
-    "use strict";
-    JsonStore = class {
-      /**
-       * Safely writes JSON by writing to a temporary file and atomically renaming.
-       */
-      static async write(filePath, data) {
-        const dir = path2.dirname(filePath);
-        await fs2.mkdir(dir, { recursive: true });
-        const tempPath = `${filePath}.${crypto.randomBytes(6).toString("hex")}.tmp`;
-        const content = JSON.stringify(data, null, 2);
-        await fs2.writeFile(tempPath, content, "utf-8");
-        try {
-          await fs2.rename(tempPath, filePath);
-        } catch (err) {
-          if (err.code === "EPERM" || err.code === "EEXIST" || err.code === "EBUSY") {
-            await new Promise((r) => setTimeout(r, 25));
-            try {
-              await fs2.copyFile(tempPath, filePath);
-              await fs2.unlink(tempPath).catch(() => {
-              });
-            } catch {
-              await fs2.writeFile(filePath, content, "utf-8");
-              await fs2.unlink(tempPath).catch(() => {
-              });
-            }
-          } else {
-            throw err;
-          }
-        }
-      }
-      /**
-       * Reads and parses a JSON file. Returns null if file does not exist.
-       */
-      static async read(filePath) {
-        try {
-          const content = await fs2.readFile(filePath, "utf-8");
-          return JSON.parse(content);
-        } catch (err) {
-          if (err.code === "ENOENT") {
-            return null;
-          }
-          throw err;
-        }
-      }
-      /**
-       * Reads all JSON files in a given directory.
-       */
-      static async list(dirPath) {
-        if (!fsSync.existsSync(dirPath)) {
-          return [];
-        }
-        const files = await fs2.readdir(dirPath);
-        const results = [];
-        for (const file of files) {
-          if (file.endsWith(".json") && !file.includes(".tmp")) {
-            const item = await this.read(path2.join(dirPath, file));
-            if (item) {
-              results.push(item);
-            }
-          }
-        }
-        return results;
-      }
-      /**
-       * Deletes a file safely if it exists.
-       */
-      static async delete(filePath) {
-        try {
-          await fs2.unlink(filePath);
-          return true;
-        } catch (err) {
-          if (err.code === "ENOENT") return false;
-          throw err;
-        }
-      }
-    };
-  }
-});
-
-// packages/backend/src/services/projectService.ts
-import path3 from "path";
-import fs3 from "fs/promises";
-import fsSync2 from "fs";
-import crypto2 from "crypto";
-var ProjectService;
-var init_projectService = __esm({
-  "packages/backend/src/services/projectService.ts"() {
-    "use strict";
-    init_config();
-    init_jsonStore();
-    ProjectService = class {
-      static getProjectMetaPath(id) {
-        return path3.join(config.projectsDir, `${id}.json`);
-      }
-      static slugify(name) {
-        return name.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "") || "project";
-      }
-      static async createProject(data) {
-        const id = `prj_${crypto2.randomBytes(6).toString("hex")}`;
-        let slug = this.slugify(data.name);
-        const existing = await this.listProjects();
-        const existingSlugs = new Set(existing.map((p) => p.slug));
-        if (existingSlugs.has(slug)) {
-          slug = `${slug}-${crypto2.randomBytes(3).toString("hex")}`;
-        }
-        const now = Date.now();
-        const project = {
-          id,
-          name: data.name.trim(),
-          slug,
-          description: data.description?.trim(),
-          createdAt: now,
-          updatedAt: now,
-          activePorts: []
-        };
-        await JsonStore.write(this.getProjectMetaPath(id), project);
-        const workspacePath = path3.join(config.workspacesDir, slug);
-        await fs3.mkdir(workspacePath, { recursive: true });
-        const readmePath = path3.join(workspacePath, "README.md");
-        if (!fsSync2.existsSync(readmePath)) {
-          await fs3.writeFile(
-            readmePath,
-            `# ${project.name}
-
-${project.description || "Welcome to your isolated project workspace."}
-
-Run dev servers or edit code here.
-`,
-            "utf-8"
-          );
-        }
-        return project;
-      }
-      static async listProjects() {
-        const projects = await JsonStore.list(config.projectsDir);
-        return projects.sort((a, b) => b.updatedAt - a.updatedAt);
-      }
-      static async getProject(id) {
-        return JsonStore.read(this.getProjectMetaPath(id));
-      }
-      static async getProjectBySlug(slug) {
-        const projects = await this.listProjects();
-        return projects.find((p) => p.slug === slug) || null;
-      }
-      static async updateProject(id, updates) {
-        const project = await this.getProject(id);
-        if (!project) return null;
-        const updated = {
-          ...project,
-          ...updates,
-          updatedAt: Date.now()
-        };
-        await JsonStore.write(this.getProjectMetaPath(id), updated);
-        return updated;
-      }
-      static async getSecrets(id) {
-        const project = await this.getProject(id);
-        return project?.secrets || {};
-      }
-      static async setSecrets(id, secrets) {
-        await this.updateProject(id, { secrets });
-      }
-      static async deleteProject(id, deleteWorkspace = false) {
-        const project = await this.getProject(id);
-        if (!project) return false;
-        await JsonStore.delete(this.getProjectMetaPath(id));
-        if (deleteWorkspace) {
-          const workspacePath = path3.join(config.workspacesDir, project.slug);
-          try {
-            await fs3.rm(workspacePath, { recursive: true, force: true });
-          } catch {
-          }
-        }
-        return true;
-      }
-    };
-  }
-});
-
-// packages/backend/src/services/workspaceService.ts
-import path5 from "path";
-import fs5 from "fs/promises";
-import fsSync4 from "fs";
-var WorkspaceService;
-var init_workspaceService = __esm({
-  "packages/backend/src/services/workspaceService.ts"() {
-    "use strict";
-    init_config();
-    WorkspaceService = class {
-      static getWorkspacePath(slug) {
-        return path5.join(config.workspacesDir, slug);
-      }
-      /**
-       * Safely resolves a path inside the project's workspace, preventing directory traversal.
-       */
-      static resolveSafePath(slug, relativePath = "") {
-        const root = path5.resolve(this.getWorkspacePath(slug));
-        const resolved = path5.resolve(root, relativePath);
-        if (!resolved.startsWith(root + path5.sep) && resolved !== root) {
-          throw new Error("Access denied: Path escapes workspace root");
-        }
-        return resolved;
-      }
-      /**
-       * Recursively lists files in the project's workspace.
-       */
-      static async listFiles(slug, subDir = "") {
-        const targetDir = this.resolveSafePath(slug, subDir);
-        if (!fsSync4.existsSync(targetDir)) {
-          return [];
-        }
-        return this.readDirRecursive(targetDir, this.getWorkspacePath(slug));
-      }
-      static async readDirRecursive(currentDir, rootDir) {
-        const entries = await fs5.readdir(currentDir, { withFileTypes: true });
-        const nodes = [];
-        for (const entry of entries) {
-          if (entry.name === ".git" || entry.name === "node_modules") {
-            continue;
-          }
-          const fullPath = path5.join(currentDir, entry.name);
-          const relPath = path5.relative(rootDir, fullPath).replace(/\\/g, "/");
-          if (entry.isDirectory()) {
-            const children = await this.readDirRecursive(fullPath, rootDir);
-            nodes.push({
-              name: entry.name,
-              path: relPath,
-              isDirectory: true,
-              children
-            });
-          } else {
-            const stats = await fs5.stat(fullPath);
-            nodes.push({
-              name: entry.name,
-              path: relPath,
-              isDirectory: false,
-              size: stats.size,
-              updatedAt: stats.mtimeMs
-            });
-          }
-        }
-        return nodes.sort((a, b) => {
-          if (a.isDirectory && !b.isDirectory) return -1;
-          if (!a.isDirectory && b.isDirectory) return 1;
-          return a.name.localeCompare(b.name);
-        });
-      }
-      /**
-       * Reads file content.
-       */
-      static async readFile(slug, relativePath) {
-        const filePath = this.resolveSafePath(slug, relativePath);
-        const stats = await fs5.stat(filePath);
-        const buffer = await fs5.readFile(filePath);
-        const isBinary = buffer.includes(0);
-        return {
-          path: relativePath.replace(/\\/g, "/"),
-          content: isBinary ? buffer.toString("base64") : buffer.toString("utf-8"),
-          isBinary,
-          size: stats.size
-        };
-      }
-      /**
-       * Writes content to a file in the workspace.
-       */
-      static async writeFile(slug, relativePath, content) {
-        const filePath = this.resolveSafePath(slug, relativePath);
-        await fs5.mkdir(path5.dirname(filePath), { recursive: true });
-        await fs5.writeFile(filePath, content, "utf-8");
-      }
-      /**
-       * Creates a directory in the workspace.
-       */
-      static async createDirectory(slug, relativePath) {
-        const dirPath = this.resolveSafePath(slug, relativePath);
-        await fs5.mkdir(dirPath, { recursive: true });
-      }
-      /**
-       * Deletes a file or directory in the workspace.
-       */
-      static async deleteFile(slug, relativePath) {
-        const targetPath = this.resolveSafePath(slug, relativePath);
-        await fs5.rm(targetPath, { recursive: true, force: true });
-      }
-    };
-  }
-});
-
-// packages/backend/src/services/credentialService.ts
-import path8 from "path";
-import os from "os";
-import fsSync7 from "fs";
-import { exec as exec2, spawn } from "child_process";
-var PROVIDER_DEFINITIONS, CredentialService;
-var init_credentialService = __esm({
-  "packages/backend/src/services/credentialService.ts"() {
-    "use strict";
-    init_config();
-    init_jsonStore();
-    init_projectService();
-    PROVIDER_DEFINITIONS = {
-      claude: {
-        id: "claude",
-        name: "Claude Code",
-        envVar: "ANTHROPIC_API_KEY",
-        cliCommand: "claude",
-        testUrl: "https://api.anthropic.com/v1/models",
-        loginCommand: "claude auth login",
-        logoutCommand: "claude auth logout",
-        hasAccountSupport: true,
-        accountDoc: "Authenticate via Anthropic account OAuth (Claude Pro, Team, or Enterprise subscription)."
-      },
-      codex: {
-        id: "codex",
-        name: "OpenAI Codex",
-        envVar: "OPENAI_API_KEY",
-        cliCommand: "codex",
-        testUrl: "https://api.openai.com/v1/models",
-        loginCommand: "codex login --device-auth",
-        logoutCommand: "codex logout",
-        hasAccountSupport: true,
-        accountDoc: "Authenticate with your OpenAI account credentials."
-      },
-      antigravity: {
-        id: "antigravity",
-        name: "Antigravity",
-        envVar: "GEMINI_API_KEY",
-        cliCommand: "agy",
-        testUrl: "https://generativelanguage.googleapis.com/v1beta/models",
-        loginCommand: "agy",
-        logoutCommand: "",
-        hasAccountSupport: true,
-        accountDoc: "Authenticate with your Google Account or Google AI Studio Gemini key."
-      },
-      opencode: {
-        id: "opencode",
-        name: "OpenCode",
-        envVar: "OPENCODE_API_KEY",
-        cliCommand: "opencode",
-        testUrl: "https://api.openai.com/v1/models",
-        loginCommand: "opencode auth login",
-        logoutCommand: "opencode auth logout",
-        hasAccountSupport: true,
-        accountDoc: "Connect an OpenCode account session or provider integration."
-      },
-      deepseek: {
-        id: "deepseek",
-        name: "DeepSeek",
-        envVar: "DEEPSEEK_API_KEY",
-        cliCommand: "deepseek",
-        testUrl: "https://api.deepseek.com/models",
-        loginCommand: "",
-        logoutCommand: "",
-        hasAccountSupport: false,
-        accountDoc: "Authenticate with direct DeepSeek API Key (DEEPSEEK_API_KEY)."
-      },
-      mock: {
-        id: "mock",
-        name: "Autonomous Agent",
-        envVar: "ANTHROPIC_API_KEY",
-        cliCommand: "",
-        testUrl: "",
-        loginCommand: "",
-        logoutCommand: "",
-        hasAccountSupport: false,
-        accountDoc: "Uses configured local or cloud credentials."
-      }
-    };
-    CredentialService = class {
-      static getCredentialsPath() {
-        return path8.join(config.dataDir, "credentials.json");
-      }
-      static async getAllCredentials() {
-        const data = await JsonStore.read(this.getCredentialsPath());
-        return data || {};
-      }
-      static async setApiKey(provider, apiKey) {
-        const creds = await this.getAllCredentials();
-        const trimmed = apiKey.trim();
-        if (!trimmed) {
-          delete creds[provider];
-        } else {
-          creds[provider] = trimmed;
-        }
-        await JsonStore.write(this.getCredentialsPath(), creds);
-      }
-      static async setPreferredAuth(provider, method) {
-        const creds = await this.getAllCredentials();
-        creds[`preferred_${provider}`] = method;
-        await JsonStore.write(this.getCredentialsPath(), creds);
-      }
-      static async getApiKey(provider, projectId) {
-        const def = PROVIDER_DEFINITIONS[provider];
-        if (!def) return null;
-        if (projectId) {
-          const secrets = await ProjectService.getSecrets(projectId);
-          if (secrets[def.envVar]) return secrets[def.envVar];
-          if (secrets[provider]) return secrets[provider];
-        }
-        const creds = await this.getAllCredentials();
-        if (creds[provider] && typeof creds[provider] === "string") return creds[provider];
-        if (creds[def.envVar] && typeof creds[def.envVar] === "string") return creds[def.envVar];
-        if (process.env[def.envVar]) return process.env[def.envVar];
-        if (provider === "mock") {
-          return creds.claude || creds.codex || creds.deepseek || creds.antigravity || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.GEMINI_API_KEY || null;
-        }
-        return null;
-      }
-      static checkCliInstalled(command) {
-        if (!command) return Promise.resolve(false);
-        const checkCmd = process.platform === "win32" ? `where ${command}` : `which ${command} || [ -x "$HOME/.local/bin/${command}" ] || [ -x "/root/.local/bin/${command}" ] || [ -x "/usr/local/bin/${command}" ]`;
-        return new Promise((resolve) => {
-          exec2(checkCmd, (err) => {
-            resolve(!err);
-          });
-        });
-      }
-      static getCliInstallCommand(provider) {
-        switch (provider) {
-          case "claude":
-            return "npm install -g @anthropic-ai/claude-code";
-          case "antigravity":
-            return "curl -fsSL https://antigravity.google/cli/install.sh | bash";
-          case "opencode":
-            return "npm install -g @opencode/cli@latest";
-          case "codex":
-            return "npm install -g @openai/codex";
-          default:
-            return "";
-        }
-      }
-      static async installCli(provider) {
-        const installCmd = this.getCliInstallCommand(provider);
-        if (!installCmd) return false;
-        return new Promise((resolve) => {
-          exec2(installCmd, { timeout: 6e4 }, async (err) => {
-            if (err) {
-              resolve(false);
-              return;
-            }
-            if (process.platform !== "win32" && provider === "antigravity") {
-              exec2(
-                'ln -sf "$HOME/.local/bin/agy" /usr/local/bin/agy 2>/dev/null || ln -sf /root/.local/bin/agy /usr/local/bin/agy 2>/dev/null || true'
-              );
-            }
-            const def = PROVIDER_DEFINITIONS[provider];
-            const verified = await this.checkCliInstalled(def?.cliCommand || "");
-            resolve(verified);
-          });
-        });
-      }
-      static maskKey(key) {
-        if (!key || key.length < 8) return "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
-        const prefix = key.slice(0, 7);
-        const suffix = key.slice(-4);
-        return `${prefix}\u2022\u2022\u2022\u2022${suffix}`;
-      }
-      static activeSessions = /* @__PURE__ */ new Map();
-      /**
-       * Inspects active account authentication status across CLI tools and session stores
-       */
-      static async checkAccountStatus(provider) {
-        const creds = await this.getAllCredentials();
-        if (creds[`account_${provider}`]?.signedIn) {
-          return {
-            signedIn: true,
-            email: creds[`account_${provider}`].email || "Account Session Active",
-            name: creds[`account_${provider}`].name
-          };
-        }
-        if (provider === "claude") {
-          return new Promise((resolve) => {
-            exec2("claude auth status", { timeout: 2500 }, (_err, stdout, stderr) => {
-              const text = (stdout || "") + (stderr || "");
-              const match = text.match(/\{[\s\S]*\}/);
-              if (match) {
-                try {
-                  const data = JSON.parse(match[0]);
-                  if (data.loggedIn === true) {
-                    resolve({
-                      signedIn: true,
-                      email: data.email || "Claude Account Session",
-                      name: data.organization || data.accountType || "Claude Pro/Team"
-                    });
-                    return;
-                  }
-                } catch {
-                }
-              }
-              const home = os.homedir();
-              const claudeJson = path8.join(home, ".claude.json");
-              if (fsSync7.existsSync(claudeJson)) {
-                try {
-                  const content = JSON.parse(fsSync7.readFileSync(claudeJson, "utf-8"));
-                  if (content.primaryApiKey || content.oauthAccount) {
-                    resolve({
-                      signedIn: true,
-                      email: content.oauthAccount?.email || "Claude Account Active",
-                      name: "Claude Subscription"
-                    });
-                    return;
-                  }
-                } catch {
-                }
-              }
-              resolve({ signedIn: false });
-            });
-          });
-        }
-        if (provider === "codex") {
-          return new Promise((resolve) => {
-            exec2("codex login status", { timeout: 2500 }, (_err, stdout, stderr) => {
-              const text = (stdout || "") + (stderr || "");
-              const lower = text.toLowerCase();
-              if (lower.includes("logged in") && !lower.includes("not logged in")) {
-                resolve({
-                  signedIn: true,
-                  email: text.trim().split("\n")[0] || "OpenAI Codex Account Active",
-                  name: "ChatGPT / Codex Subscription"
-                });
-                return;
-              }
-              const home = os.homedir();
-              const authJson = path8.join(home, ".codex", "auth.json");
-              if (fsSync7.existsSync(authJson)) {
-                try {
-                  const data = JSON.parse(fsSync7.readFileSync(authJson, "utf-8"));
-                  if (data && (data.access_token || data.refresh_token || data.tokens)) {
-                    resolve({
-                      signedIn: true,
-                      email: data.email || "OpenAI Account Active",
-                      name: "ChatGPT / Codex Subscription"
-                    });
-                    return;
-                  }
-                } catch {
-                }
-              }
-              resolve({ signedIn: false });
-            });
-          });
-        }
-        if (provider === "opencode") {
-          return new Promise((resolve) => {
-            exec2("opencode auth list", { timeout: 2500 }, (_err, stdout) => {
-              const out = (stdout || "").trim();
-              if (out && !out.includes("No authenticated integrations")) {
-                resolve({
-                  signedIn: true,
-                  email: out.split("\n")[0].trim() || "OpenCode Account Connected"
-                });
-              } else {
-                resolve({ signedIn: false });
-              }
-            });
-          });
-        }
-        if (provider === "antigravity") {
-          return new Promise((resolve) => {
-            exec2("agy models", { timeout: 2e3 }, (err, stdout, stderr) => {
-              const out = (stdout || "") + (stderr || "");
-              if (!err && !out.toLowerCase().includes("sign in") && !out.toLowerCase().includes("error") && out.trim().length > 0) {
-                resolve({
-                  signedIn: true,
-                  email: "Google Account / Antigravity Active",
-                  name: "Antigravity CLI Agent"
-                });
-              } else {
-                resolve({ signedIn: false });
-              }
-            });
-          });
-        }
-        return { signedIn: false };
-      }
-      /**
-       * Retrieves active login session for a provider
-       */
-      static getLoginSession(provider) {
-        const entry = this.activeSessions.get(provider);
-        return entry ? entry.session : null;
-      }
-      /**
-       * Retrieves comprehensive auth status per provider (combining Account + API Key + CLI)
-       */
-      static async getProviderStatus(projectId) {
-        const statuses = {};
-        const providers = Object.keys(PROVIDER_DEFINITIONS);
-        const creds = await this.getAllCredentials();
-        for (const p of providers) {
-          const def = PROVIDER_DEFINITIONS[p];
-          const key = await this.getApiKey(p, projectId);
-          const hasCli = await this.checkCliInstalled(def.cliCommand);
-          const accountAuth = await this.checkAccountStatus(p);
-          const activeSession = this.getLoginSession(p);
-          const preferred = creds[`preferred_${p}`];
-          let authMethod = "none";
-          if (preferred === "account" && accountAuth.signedIn) {
-            authMethod = "account";
-          } else if (preferred === "api_key" && key) {
-            authMethod = "api_key";
-          } else if (accountAuth.signedIn) {
-            authMethod = "account";
-          } else if (key) {
-            authMethod = "api_key";
-          } else if (hasCli) {
-            authMethod = "cli";
-          }
-          statuses[p] = {
-            id: p,
-            name: def.name,
-            configured: Boolean(accountAuth.signedIn || key || p === "mock"),
-            authMethod,
-            preferredMethod: preferred || (accountAuth.signedIn ? "account" : key ? "api_key" : void 0),
-            envVar: def.envVar,
-            hasCli,
-            maskedKey: key ? this.maskKey(key) : void 0,
-            accountEmail: accountAuth.email,
-            accountName: accountAuth.name,
-            accountStatus: accountAuth.signedIn ? "signed_in" : "signed_out",
-            hasAccountSupport: def.hasAccountSupport,
-            loginCommand: def.loginCommand,
-            activeSession: activeSession || void 0
-          };
-        }
-        return statuses;
-      }
-      /**
-       * Cancels active interactive login session
-       */
-      static cancelAccountLogin(provider) {
-        const entry = this.activeSessions.get(provider);
-        if (entry) {
-          if (entry.timeout) clearTimeout(entry.timeout);
-          if (entry.child && !entry.child.killed) {
-            try {
-              entry.child.kill("SIGTERM");
-            } catch {
-            }
-          }
-          this.activeSessions.delete(provider);
-        }
-      }
-      /**
-       * Launches interactive account authentication for a provider
-       */
-      static async triggerAccountLogin(provider) {
-        const def = PROVIDER_DEFINITIONS[provider];
-        if (!def) {
-          return {
-            success: false,
-            command: "",
-            message: `Provider ${provider} not found`
-          };
-        }
-        this.cancelAccountLogin(provider);
-        if (def.cliCommand) {
-          let hasCli = await this.checkCliInstalled(def.cliCommand);
-          if (!hasCli) {
-            hasCli = await this.installCli(provider);
-            if (!hasCli) {
-              const installCmd = this.getCliInstallCommand(provider);
-              return {
-                success: false,
-                command: def.loginCommand,
-                message: `CLI tool "${def.cliCommand}" is not installed in PATH. Please install it with: ${installCmd || def.cliCommand}`
-              };
-            }
-          }
-        }
-        const session = {
-          provider,
-          status: "pending",
-          startedAt: Date.now()
-        };
-        if (provider === "codex") {
-          session.flow = "device_code";
-          const child = spawn("codex", ["login", "--device-auth"], {
-            shell: true,
-            env: {
-              ...process.env,
-              PATH: `/usr/local/bin:$HOME/.local/bin:${process.env.PATH || ""}`
-            }
-          });
-          const entry = {
-            session,
-            child
-          };
-          this.activeSessions.set(provider, entry);
-          let buffer = "";
-          const onData = (data) => {
-            buffer += data.toString();
-            const clean = buffer.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
-            const urlMatch = clean.match(/https:\/\/[^\s"'<>\x1b]+/);
-            const codeMatch = clean.match(/([A-Z0-9]{4,5}-[A-Z0-9]{4,5})/);
-            if (urlMatch && !session.authUrl) {
-              session.authUrl = urlMatch[0].trim();
-            }
-            if (codeMatch && !session.userCode) {
-              session.userCode = codeMatch[0].trim();
-            }
-          };
-          child.stdout?.on("data", onData);
-          child.stderr?.on("data", onData);
-          child.on("exit", async (code) => {
-            if (code === 0) {
-              session.status = "completed";
-              session.message = "Successfully authenticated with OpenAI Codex account!";
-              const creds = await this.getAllCredentials();
-              creds["account_codex"] = {
-                signedIn: true,
-                email: "ChatGPT / OpenAI Account Session",
-                updatedAt: Date.now()
-              };
-              creds["preferred_codex"] = "account";
-              await JsonStore.write(this.getCredentialsPath(), creds);
-            } else if (session.status !== "completed") {
-              session.status = "failed";
-              session.error = `Codex login exited with code ${code}`;
-            }
-          });
-          entry.timeout = setTimeout(() => {
-            this.cancelAccountLogin(provider);
-          }, 15 * 60 * 1e3);
-          await new Promise((resolve) => {
-            const interval = setInterval(() => {
-              if (session.authUrl && session.userCode) {
-                clearInterval(interval);
-                resolve();
-              }
-            }, 150);
-            setTimeout(() => {
-              clearInterval(interval);
-              resolve();
-            }, 2200);
-          });
-          return {
-            success: true,
-            session,
-            command: "codex login --device-auth",
-            message: session.userCode ? `One-time code: ${session.userCode}. Complete sign-in in the opened browser link.` : "Codex device authentication initiated. Open the URL to authorize."
-          };
-        }
-        if (provider === "claude") {
-          session.flow = "oauth_code";
-          session.requiresCodeInput = true;
-          const child = spawn("claude", ["auth", "login"], {
-            shell: true,
-            stdio: ["pipe", "pipe", "pipe"],
-            env: {
-              ...process.env,
-              PATH: `/usr/local/bin:$HOME/.local/bin:${process.env.PATH || ""}`
-            }
-          });
-          const entry = {
-            session,
-            child
-          };
-          this.activeSessions.set(provider, entry);
-          let buffer = "";
-          const onData = (data) => {
-            buffer += data.toString();
-            const clean = buffer.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
-            const urlMatch = clean.match(/https:\/\/claude\.ai\/oauth\/authorize[^\s"'<>\x1b]+/);
-            if (urlMatch && !session.authUrl) {
-              session.authUrl = urlMatch[0].trim();
-              session.status = "awaiting_code";
-            }
-          };
-          child.stdout?.on("data", onData);
-          child.stderr?.on("data", onData);
-          child.on("exit", async (code) => {
-            if (code === 0) {
-              session.status = "completed";
-              session.message = "Successfully authenticated with Claude Code account!";
-              const creds = await this.getAllCredentials();
-              creds["account_claude"] = {
-                signedIn: true,
-                email: "Claude Pro/Team Session",
-                updatedAt: Date.now()
-              };
-              creds["preferred_claude"] = "account";
-              await JsonStore.write(this.getCredentialsPath(), creds);
-            } else if (session.status !== "completed") {
-              session.status = "failed";
-              session.error = `Claude auth login exited with code ${code}`;
-            }
-          });
-          entry.timeout = setTimeout(() => {
-            this.cancelAccountLogin(provider);
-          }, 15 * 60 * 1e3);
-          await new Promise((resolve) => {
-            const interval = setInterval(() => {
-              if (session.authUrl) {
-                clearInterval(interval);
-                resolve();
-              }
-            }, 150);
-            setTimeout(() => {
-              clearInterval(interval);
-              resolve();
-            }, 2200);
-          });
-          return {
-            success: true,
-            session,
-            command: "claude auth login",
-            message: "Open the authorization link in your browser, then paste the code below."
-          };
-        }
-        if (provider === "antigravity") {
-          session.status = "idle";
-          session.flow = "instructions";
-          session.authUrl = "https://aistudio.google.com/app/apikey";
-          session.message = "Antigravity models run on Google Gemini 2.0. Connect with a free Google AI Studio key (instant 1-click) or enter your Google OAuth session token below.";
-          return {
-            success: true,
-            session,
-            command: "agy",
-            message: session.message
-          };
-        }
-        if (provider === "opencode") {
-          session.status = "idle";
-          session.flow = "token";
-          session.message = 'Enter your OpenCode account token or API key below, or run "opencode auth login" in terminal.';
-          return {
-            success: true,
-            session,
-            command: "opencode auth login",
-            message: session.message
-          };
-        }
-        session.status = "idle";
-        session.flow = "token";
-        session.authUrl = "https://platform.deepseek.com/api_keys";
-        session.message = "DeepSeek authenticates via direct API Key.";
-        return {
-          success: true,
-          session,
-          command: "",
-          message: session.message
-        };
-      }
-      /**
-       * Confirms code for interactive OAuth flows (e.g. Claude Code)
-       */
-      static async confirmAccountCode(provider, code) {
-        const entry = this.activeSessions.get(provider);
-        if (!entry || !entry.child || entry.child.killed) {
-          return {
-            success: false,
-            message: "No active login session waiting for confirmation code."
-          };
-        }
-        const trimmed = code.trim();
-        if (!trimmed) {
-          return { success: false, message: "Authorization code cannot be empty." };
-        }
-        try {
-          entry.child.stdin?.write(`${trimmed}
-`);
-          await new Promise((resolve) => {
-            const timer = setTimeout(resolve, 5e3);
-            entry.child?.once("exit", () => {
-              clearTimeout(timer);
-              resolve();
-            });
-          });
-          const accountStatus = await this.checkAccountStatus(provider);
-          if (accountStatus.signedIn || entry.session.status === "completed") {
-            entry.session.status = "completed";
-            return {
-              success: true,
-              message: `Successfully authenticated with ${PROVIDER_DEFINITIONS[provider]?.name || provider}!`
-            };
-          }
-          return {
-            success: true,
-            message: "Code submitted. Refreshing account status..."
-          };
-        } catch (err) {
-          return {
-            success: false,
-            message: `Failed to submit code: ${err.message}`
-          };
-        }
-      }
-      /**
-       * Directly saves a long-lived account/session token for a provider
-       */
-      static async saveAccountToken(provider, token) {
-        const trimmed = token.trim();
-        if (!trimmed) {
-          return { success: false, message: "Token cannot be empty" };
-        }
-        const creds = await this.getAllCredentials();
-        creds[`account_${provider}`] = {
-          signedIn: true,
-          email: `${PROVIDER_DEFINITIONS[provider]?.name || provider} Token Session`,
-          token: trimmed,
-          updatedAt: Date.now()
-        };
-        creds[`preferred_${provider}`] = "account";
-        if (provider === "claude") {
-          creds.claude = trimmed;
-          try {
-            const claudeJson = path8.join(os.homedir(), ".claude.json");
-            let current = {};
-            if (fsSync7.existsSync(claudeJson)) {
-              current = JSON.parse(fsSync7.readFileSync(claudeJson, "utf-8"));
-            }
-            current.primaryApiKey = trimmed;
-            fsSync7.writeFileSync(claudeJson, JSON.stringify(current, null, 2));
-          } catch {
-          }
-        } else if (provider === "codex") {
-          creds.codex = trimmed;
-          exec2(
-            `export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; printf "%s" "${trimmed}" | codex login --with-access-token 2>/dev/null || true`
-          );
-        } else if (provider === "antigravity") {
-          creds.antigravity = trimmed;
-          creds.GEMINI_API_KEY = trimmed;
-        } else if (provider === "deepseek") {
-          creds.deepseek = trimmed;
-        } else if (provider === "opencode") {
-          creds.opencode = trimmed;
-        }
-        await JsonStore.write(this.getCredentialsPath(), creds);
-        return {
-          success: true,
-          message: `Saved session token for ${PROVIDER_DEFINITIONS[provider]?.name || provider}!`
-        };
-      }
-      /**
-       * Logs out account session for a provider
-       */
-      static async logoutAccount(provider) {
-        const def = PROVIDER_DEFINITIONS[provider];
-        const creds = await this.getAllCredentials();
-        delete creds[`account_${provider}`];
-        await JsonStore.write(this.getCredentialsPath(), creds);
-        if (def && def.logoutCommand) {
-          const hasCli = await this.checkCliInstalled(def.cliCommand);
-          if (hasCli) {
-            await new Promise((resolve) => {
-              exec2(def.logoutCommand, { timeout: 3e3 }, () => resolve());
-            });
-          }
-        }
-        return {
-          success: true,
-          message: `Signed out of ${def?.name || provider} account session.`
-        };
-      }
-      /**
-       * Tests API key validity against live provider endpoint
-       */
-      static async testApiKey(provider, apiKey) {
-        const trimmed = apiKey.trim();
-        if (!trimmed) {
-          return { success: false, message: "API key cannot be empty" };
-        }
-        try {
-          if (provider === "claude") {
-            const res = await fetch("https://api.anthropic.com/v1/models", {
-              headers: {
-                "x-api-key": trimmed,
-                "anthropic-version": "2023-06-01"
-              }
-            });
-            if (res.ok) {
-              return { success: true, message: "Anthropic Claude API key verified successfully!" };
-            }
-            const err = await res.json().catch(() => ({}));
-            return {
-              success: false,
-              message: err.error?.message || `Anthropic returned HTTP ${res.status}`
-            };
-          }
-          if (provider === "codex" || provider === "opencode") {
-            const res = await fetch("https://api.openai.com/v1/models", {
-              headers: {
-                Authorization: `Bearer ${trimmed}`
-              }
-            });
-            if (res.ok) {
-              return { success: true, message: "OpenAI API key verified successfully!" };
-            }
-            const err = await res.json().catch(() => ({}));
-            return {
-              success: false,
-              message: err.error?.message || `OpenAI returned HTTP ${res.status}`
-            };
-          }
-          if (provider === "deepseek") {
-            const res = await fetch("https://api.deepseek.com/models", {
-              headers: {
-                Authorization: `Bearer ${trimmed}`
-              }
-            });
-            if (res.ok) {
-              return { success: true, message: "DeepSeek API key verified successfully!" };
-            }
-            const err = await res.json().catch(() => ({}));
-            return {
-              success: false,
-              message: err.error?.message || `DeepSeek returned HTTP ${res.status}`
-            };
-          }
-          if (provider === "antigravity") {
-            const res = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmed)}`
-            );
-            if (res.ok) {
-              return { success: true, message: "Google Gemini/Antigravity API key verified successfully!" };
-            }
-            const err = await res.json().catch(() => ({}));
-            return {
-              success: false,
-              message: err.error?.message || `Google returned HTTP ${res.status}`
-            };
-          }
-          return { success: true, message: "API key format valid." };
-        } catch (err) {
-          return { success: false, message: `Connection test failed: ${err.message}` };
-        }
-      }
-    };
-  }
-});
-
-// packages/backend/src/harness/tools.ts
-import { exec as exec3 } from "child_process";
-var agentTools;
-var init_tools = __esm({
-  "packages/backend/src/harness/tools.ts"() {
-    "use strict";
-    init_workspaceService();
-    agentTools = {
-      read_file: {
-        name: "read_file",
-        description: "Read the contents of a file in the workspace",
-        parameters: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Relative file path" }
-          },
-          required: ["path"]
-        },
-        execute: async (_workspacePath, slug, args) => {
-          try {
-            const file = await WorkspaceService.readFile(slug, args.path);
-            return file.content;
-          } catch (err) {
-            return `Error reading file: ${err.message}`;
-          }
-        }
-      },
-      write_file: {
-        name: "write_file",
-        description: "Create or overwrite a file in the workspace",
-        parameters: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Relative file path" },
-            content: { type: "string", description: "Full text content to write" }
-          },
-          required: ["path", "content"]
-        },
-        execute: async (_workspacePath, slug, args) => {
-          try {
-            await WorkspaceService.writeFile(slug, args.path, args.content);
-            return `Successfully wrote ${args.content.length} bytes to ${args.path}`;
-          } catch (err) {
-            return `Error writing file: ${err.message}`;
-          }
-        }
-      },
-      list_files: {
-        name: "list_files",
-        description: "List files and directories in the workspace",
-        parameters: {
-          type: "object",
-          properties: {
-            subDir: { type: "string", description: "Optional sub-directory" }
-          }
-        },
-        execute: async (_workspacePath, slug, args) => {
-          try {
-            const files = await WorkspaceService.listFiles(slug, args.subDir || "");
-            return JSON.stringify(files.map((f) => ({ name: f.name, path: f.path, isDir: f.isDirectory })), null, 2);
-          } catch (err) {
-            return `Error listing files: ${err.message}`;
-          }
-        }
-      },
-      run_command: {
-        name: "run_command",
-        description: "Execute a shell command inside the project computer workspace",
-        parameters: {
-          type: "object",
-          properties: {
-            command: { type: "string", description: "The command to execute" }
-          },
-          required: ["command"]
-        },
-        execute: (workspacePath, _slug, args) => {
-          return new Promise((resolve) => {
-            exec3(args.command, { cwd: workspacePath, timeout: 3e4 }, (error, stdout, stderr) => {
-              if (error) {
-                resolve(`Command failed: ${error.message}
-${stderr}`);
-              } else {
-                resolve(stdout || stderr || "Command executed with no output.");
-              }
-            });
-          });
-        }
-      }
-    };
-  }
-});
-
-// packages/backend/src/harness/realLlmEngine.ts
-var RealLlmEngine;
-var init_realLlmEngine = __esm({
-  "packages/backend/src/harness/realLlmEngine.ts"() {
-    "use strict";
-    init_tools();
-    RealLlmEngine = class {
-      /**
-       * Runs an autonomous tool loop using a real LLM API (Anthropic, OpenAI, DeepSeek)
-       */
-      static async run(params) {
-        const { provider, apiKey } = params;
-        if (provider === "claude") {
-          return this.runAnthropic(params);
-        } else if (provider === "codex" || provider === "deepseek" || provider === "opencode" || provider === "antigravity") {
-          return this.runOpenAiCompatible(params);
-        }
-        return false;
-      }
-      /**
-       * Anthropic Messages API Tool Loop
-       */
-      static async runAnthropic(params) {
-        const { apiKey, model, prompt, workspacePath, slug, turnId, signal, onEvent } = params;
-        await onEvent({
-          type: "reasoning_delta",
-          turnId,
-          text: `Authenticating with Anthropic API...
-Connecting to model: ${model || "claude-3-7-sonnet-20250219"}`
-        });
-        const anthropicTools = [
-          {
-            name: "list_files",
-            description: agentTools.list_files.description,
-            input_schema: agentTools.list_files.parameters
-          },
-          {
-            name: "read_file",
-            description: agentTools.read_file.description,
-            input_schema: agentTools.read_file.parameters
-          },
-          {
-            name: "write_file",
-            description: agentTools.write_file.description,
-            input_schema: agentTools.write_file.parameters
-          },
-          {
-            name: "run_command",
-            description: agentTools.run_command.description,
-            input_schema: agentTools.run_command.parameters
-          }
-        ];
-        const messages = [{ role: "user", content: prompt }];
-        const systemPrompt = `You are an elite autonomous software engineering agent running inside an isolated project computer.
-Workspace root: ${workspacePath}
-You have access to workspace tools: list_files, read_file, write_file, run_command.
-Inspect existing files, write clean code, install required packages, run build scripts, and verify your work.`;
-        let maxSteps = 6;
-        while (maxSteps-- > 0 && !signal?.aborted) {
-          const res = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-              "x-api-key": apiKey,
-              "anthropic-version": "2023-06-01",
-              "content-type": "application/json"
-            },
-            body: JSON.stringify({
-              model: model.includes("claude") ? "claude-3-7-sonnet-20250219" : "claude-3-5-sonnet-20241022",
-              max_tokens: 4096,
-              system: systemPrompt,
-              messages,
-              tools: anthropicTools
-            })
-          });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error?.message || `Anthropic API error HTTP ${res.status}`);
-          }
-          const data = await res.json();
-          const content = data.content || [];
-          const toolCalls = [];
-          for (const block of content) {
-            if (block.type === "text" && block.text) {
-              await onEvent({
-                type: "text_delta",
-                turnId,
-                text: block.text
-              });
-            } else if (block.type === "tool_use") {
-              toolCalls.push(block);
-            }
-          }
-          if (toolCalls.length === 0) {
-            if (data.usage) {
-              await onEvent({
-                type: "turn_completed",
-                turnId,
-                usage: {
-                  promptTokens: data.usage.input_tokens,
-                  completionTokens: data.usage.output_tokens,
-                  totalTokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
-                }
-              });
-            }
-            return true;
-          }
-          messages.push({ role: "assistant", content });
-          const toolResults = [];
-          for (const tc of toolCalls) {
-            if (signal?.aborted) break;
-            await onEvent({
-              type: "tool_started",
-              turnId,
-              toolName: tc.name,
-              toolCallId: tc.id,
-              input: tc.input
-            });
-            const toolDef = agentTools[tc.name];
-            let output = "";
-            if (toolDef) {
-              output = await toolDef.execute(workspacePath, slug, tc.input);
-            } else {
-              output = `Error: Tool ${tc.name} not found.`;
-            }
-            await onEvent({
-              type: "tool_finished",
-              turnId,
-              toolName: tc.name,
-              toolCallId: tc.id,
-              output
-            });
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: tc.id,
-              content: output
-            });
-          }
-          messages.push({ role: "user", content: toolResults });
-        }
-        return true;
-      }
-      /**
-       * OpenAI / DeepSeek Chat Completions Tool Loop
-       */
-      static async runOpenAiCompatible(params) {
-        const { provider, apiKey, model, prompt, workspacePath, slug, turnId, signal, onEvent } = params;
-        const baseUrl = provider === "deepseek" ? "https://api.deepseek.com/chat/completions" : provider === "antigravity" ? "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" : "https://api.openai.com/v1/chat/completions";
-        const actualModel = provider === "deepseek" ? "deepseek-chat" : provider === "antigravity" ? "gemini-2.0-flash" : model || "gpt-4o";
-        await onEvent({
-          type: "reasoning_delta",
-          turnId,
-          text: `Authenticating with ${provider.toUpperCase()} API...
-Connecting to model: ${actualModel}`
-        });
-        const openAiTools = [
-          {
-            type: "function",
-            function: {
-              name: "list_files",
-              description: agentTools.list_files.description,
-              parameters: agentTools.list_files.parameters
-            }
-          },
-          {
-            type: "function",
-            function: {
-              name: "read_file",
-              description: agentTools.read_file.description,
-              parameters: agentTools.read_file.parameters
-            }
-          },
-          {
-            type: "function",
-            function: {
-              name: "write_file",
-              description: agentTools.write_file.description,
-              parameters: agentTools.write_file.parameters
-            }
-          },
-          {
-            type: "function",
-            function: {
-              name: "run_command",
-              description: agentTools.run_command.description,
-              parameters: agentTools.run_command.parameters
-            }
-          }
-        ];
-        const messages = [
-          {
-            role: "system",
-            content: `You are an elite autonomous software engineering agent inside an isolated project computer at ${workspacePath}. Use tools to inspect, author files, and run commands.`
-          },
-          { role: "user", content: prompt }
-        ];
-        let maxSteps = 6;
-        while (maxSteps-- > 0 && !signal?.aborted) {
-          const res = await fetch(baseUrl, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model: actualModel,
-              messages,
-              tools: openAiTools
-            })
-          });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error?.message || `${provider} API error HTTP ${res.status}`);
-          }
-          const data = await res.json();
-          const choice = data.choices?.[0];
-          if (!choice) break;
-          const assistantMsg = choice.message;
-          messages.push(assistantMsg);
-          if (assistantMsg.content) {
-            await onEvent({
-              type: "text_delta",
-              turnId,
-              text: assistantMsg.content
-            });
-          }
-          const toolCalls = assistantMsg.tool_calls || [];
-          if (toolCalls.length === 0) {
-            if (data.usage) {
-              await onEvent({
-                type: "turn_completed",
-                turnId,
-                usage: {
-                  promptTokens: data.usage.prompt_tokens,
-                  completionTokens: data.usage.completion_tokens,
-                  totalTokens: data.usage.total_tokens
-                }
-              });
-            }
-            return true;
-          }
-          for (const tc of toolCalls) {
-            if (signal?.aborted) break;
-            let parsedArgs = {};
-            try {
-              parsedArgs = JSON.parse(tc.function.arguments || "{}");
-            } catch {
-              parsedArgs = {};
-            }
-            await onEvent({
-              type: "tool_started",
-              turnId,
-              toolName: tc.function.name,
-              toolCallId: tc.id,
-              input: parsedArgs
-            });
-            const toolDef = agentTools[tc.function.name];
-            let output = "";
-            if (toolDef) {
-              output = await toolDef.execute(workspacePath, slug, parsedArgs);
-            } else {
-              output = `Error: Tool ${tc.function.name} not found.`;
-            }
-            await onEvent({
-              type: "tool_finished",
-              turnId,
-              toolName: tc.function.name,
-              toolCallId: tc.id,
-              output
-            });
-            messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: output
-            });
-          }
-        }
-        return true;
-      }
-    };
-  }
-});
-
-// packages/backend/src/harness/autonomousHarness.ts
-var autonomousHarness_exports = {};
-__export(autonomousHarness_exports, {
-  AutonomousHarness: () => AutonomousHarness
-});
-import path9 from "path";
-var AutonomousHarness;
-var init_autonomousHarness = __esm({
-  "packages/backend/src/harness/autonomousHarness.ts"() {
-    "use strict";
-    init_tools();
-    init_projectService();
-    init_credentialService();
-    init_realLlmEngine();
-    AutonomousHarness = class {
-      id = "mock";
-      async run(req) {
-        const { prompt, workspacePath, projectId, signal, onEvent } = req;
-        const turnId = `turn_${Date.now()}`;
-        const project = await ProjectService.getProject(projectId);
-        const slug = project?.slug || path9.basename(workspacePath);
-        if (signal?.aborted) return;
-        const apiKey = await CredentialService.getApiKey("mock", projectId);
-        if (apiKey) {
-          const allCreds = await CredentialService.getAllCredentials();
-          let realProvider = "claude";
-          let keyToUse = apiKey;
-          if (allCreds.claude || process.env.ANTHROPIC_API_KEY) {
-            realProvider = "claude";
-            keyToUse = allCreds.claude || process.env.ANTHROPIC_API_KEY;
-          } else if (allCreds.deepseek || process.env.DEEPSEEK_API_KEY) {
-            realProvider = "deepseek";
-            keyToUse = allCreds.deepseek || process.env.DEEPSEEK_API_KEY;
-          } else if (allCreds.antigravity || process.env.GEMINI_API_KEY) {
-            realProvider = "antigravity";
-            keyToUse = allCreds.antigravity || process.env.GEMINI_API_KEY;
-          } else if (allCreds.codex || allCreds.opencode || process.env.OPENAI_API_KEY) {
-            realProvider = "codex";
-            keyToUse = allCreds.codex || allCreds.opencode || process.env.OPENAI_API_KEY;
-          }
-          try {
-            const handled = await RealLlmEngine.run({
-              provider: realProvider,
-              apiKey: keyToUse,
-              model: req.model,
-              prompt,
-              workspacePath,
-              slug,
-              turnId,
-              signal,
-              onEvent
-            });
-            if (handled) return;
-          } catch (err) {
-            await onEvent({
-              type: "reasoning_delta",
-              turnId,
-              text: `Real LLM engine returned an issue: ${err.message}. Engaging autonomous fallback...`
-            });
-          }
-        }
-        await onEvent({
-          type: "reasoning_delta",
-          turnId,
-          text: `Autonomous Agent initialized.
-Goal: "${prompt}"
-\u{1F4A1} Tip: Add your Anthropic, OpenAI, DeepSeek, or Gemini API keys in Provider Credentials to enable full multi-turn real LLM inference with live tool execution.
-Inspecting workspace environment at ${workspacePath}...`
-        });
-        if (signal?.aborted) return;
-        await new Promise((r) => setTimeout(r, 60));
-        const listCallId = `call_${Date.now()}_1`;
-        await onEvent({
-          type: "tool_started",
-          turnId,
-          toolCallId: listCallId,
-          toolName: "list_files",
-          input: { subDir: "" }
-        });
-        const fileListResult = await agentTools.list_files.execute(workspacePath, slug, {});
-        if (signal?.aborted) return;
-        await onEvent({
-          type: "tool_finished",
-          turnId,
-          toolCallId: listCallId,
-          toolName: "list_files",
-          output: fileListResult
-        });
-        const lower = prompt.toLowerCase();
-        let actionPlan = "";
-        const filesToCreate = [];
-        if (lower.includes("todo") || lower.includes("task")) {
-          actionPlan = "Detected task/todo application request. Generating responsive HTML/JS todo application.";
-          filesToCreate.push({
-            path: "index.html",
-            desc: "Interactive Todo Application with localStorage persistence",
-            content: `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Orbit Tasks</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0b0f19; color: #f1f5f9; display: flex; justify-content: center; padding: 2rem; }
-    .app { background: #1e293b; border: 1px solid #334155; border-radius: 12px; width: 100%; max-width: 480px; padding: 1.5rem; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-    h1 { color: #38bdf8; margin-top: 0; }
-    .input-row { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
-    input { flex: 1; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: white; }
-    button { background: #38bdf8; color: #0b0f19; border: none; padding: 0.75rem 1.25rem; border-radius: 8px; font-weight: bold; cursor: pointer; }
-    ul { list-style: none; padding: 0; margin: 0; }
-    li { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; border-bottom: 1px solid #334155; }
-    .del { background: #f43f5e; color: white; padding: 0.25rem 0.6rem; font-size: 0.8rem; border-radius: 4px; }
-  </style>
-</head>
-<body>
-  <div class="app">
-    <h1>Orbit Tasks</h1>
-    <div class="input-row">
-      <input type="text" id="taskInput" placeholder="Add a new task..." onkeydown="if(event.key==='Enter') addTask()">
-      <button onclick="addTask()">Add</button>
-    </div>
-    <ul id="taskList"></ul>
-  </div>
-  <script>
-    let tasks = JSON.parse(localStorage.getItem('orbit_tasks') || '["Explore Remote project computer", "Build autonomous agent"]');
-    function render() {
-      const list = document.getElementById('taskList');
-      list.innerHTML = tasks.map((t, i) => \`<li><span>\${t}</span><button class="del" onclick="del(\${i})">\u2715</button></li>\`).join('');
-      localStorage.setItem('orbit_tasks', JSON.stringify(tasks));
-    }
-    function addTask() {
-      const input = document.getElementById('taskInput');
-      if (input.value.trim()) { tasks.push(input.value.trim()); input.value = ''; render(); }
-    }
-    function del(i) { tasks.splice(i, 1); render(); }
-    render();
-  </script>
-</body>
-</html>`
-          });
-        } else if (lower.includes("calc") || lower.includes("counter")) {
-          const isCounter = lower.includes("counter");
-          const appTitle = isCounter ? "Interactive Counter" : "Calculator";
-          actionPlan = `Detected ${appTitle.toLowerCase()} request. Generating responsive web application.`;
-          filesToCreate.push({
-            path: "index.html",
-            desc: `${appTitle} Web App`,
-            content: `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>${appTitle}</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #090d16; color: white; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .calc { background: #1e293b; border: 1px solid #334155; padding: 1.5rem; border-radius: 1rem; width: 300px; text-align: center; }
-    .display { background: #0f172a; font-size: 2.5rem; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; color: #38bdf8; font-family: monospace; font-weight: bold; }
-    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
-    button { background: #334155; color: white; border: none; padding: 1rem; font-size: 1.2rem; border-radius: 8px; cursor: pointer; }
-    button.op { background: #0284c7; font-weight: bold; }
-    button:hover { opacity: 0.9; }
-  </style>
-</head>
-<body>
-  <div class="calc">
-    <h2>${appTitle}</h2>
-    <div class="display" id="res">0</div>
-    <div class="grid">
-      <button onclick="press(-1)" class="op">-</button>
-      <button onclick="clr()">Reset</button>
-      <button onclick="press(1)" class="op">+</button>
-    </div>
-  </div>
-  <script>
-    let cur = 0;
-    function update() { document.getElementById('res').textContent = cur; }
-    function press(v) { cur += v; update(); }
-    function clr() { cur = 0; update(); }
-  </script>
-</body>
-</html>`
-          });
-        } else {
-          actionPlan = "Creating requested project files and architecture notes.";
-          filesToCreate.push({
-            path: "app.js",
-            desc: "Application logic script",
-            content: `// Application generated by Remote Autonomous Agent
-console.log("Remote Project Computer Initialized at: " + new Date().toISOString());
-
-module.exports = {
-  status: "ready",
-  agent: "Remote Autonomous Harness"
-};
-`
-          });
-          filesToCreate.push({
-            path: "index.html",
-            desc: "Project dashboard preview",
-            content: `<!DOCTYPE html><html><head><title>Remote Project</title><style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;padding:2rem;text-align:center;}h1{color:#38bdf8;}</style></head><body><h1>Project Ready</h1><p>Prompt: ${prompt.replace(/</g, "&lt;")}</p></body></html>`
-          });
-        }
-        await onEvent({
-          type: "reasoning_delta",
-          turnId,
-          text: `Plan: ${actionPlan}
-Preparing to write ${filesToCreate.length} file(s)...`
-        });
-        if (signal?.aborted) return;
-        for (const f of filesToCreate) {
-          if (signal?.aborted) return;
-          const callId = `call_${Date.now()}_write_${f.path.replace(/[^a-zA-Z0-9]/g, "_")}`;
-          await onEvent({
-            type: "tool_started",
-            turnId,
-            toolCallId: callId,
-            toolName: "write_file",
-            input: { path: f.path, description: f.desc }
-          });
-          const writeResult = await agentTools.write_file.execute(workspacePath, slug, {
-            path: f.path,
-            content: f.content
-          });
-          if (signal?.aborted) return;
-          await new Promise((r) => setTimeout(r, 50));
-          await onEvent({
-            type: "tool_finished",
-            turnId,
-            toolCallId: callId,
-            toolName: "write_file",
-            output: writeResult
-          });
-        }
-        if (signal?.aborted) return;
-        const summary = [
-          `### Autonomous Run Completed Successfully
-
-`,
-          `I analyzed your requirements and took the following actions:
-`,
-          `1. **Workspace Inspection**: Scanned project computer directory.
-`,
-          `2. **Generated Files**:
-`,
-          ...filesToCreate.map((f) => `   - \`${f.path}\`: ${f.desc}
-`),
-          `
-`,
-          `You can inspect these files in the **Workspace Files** tab or view the live result in the **Live Preview** tab!`
-        ];
-        for (const chunk of summary) {
-          if (signal?.aborted) return;
-          await onEvent({
-            type: "text_delta",
-            turnId,
-            text: chunk
-          });
-          await new Promise((r) => setTimeout(r, 30));
-        }
-        if (signal?.aborted) return;
-        await onEvent({
-          type: "turn_completed",
-          turnId,
-          usage: {
-            promptTokens: 85,
-            completionTokens: 240,
-            totalTokens: 325
-          }
-        });
-      }
-    };
-  }
-});
-
 // packages/backend/src/index.ts
 var import_express2 = __toESM(require_express2(), 1);
 var import_cors = __toESM(require_lib3(), 1);
@@ -29014,17 +27288,206 @@ var import_subprotocol = __toESM(require_subprotocol(), 1);
 var import_websocket = __toESM(require_websocket(), 1);
 var import_websocket_server = __toESM(require_websocket_server(), 1);
 
-// packages/backend/src/index.ts
-init_config();
+// packages/backend/src/config.ts
+import path from "path";
+import fs from "fs";
+var baseDataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), "data");
+var config = {
+  port: parseInt(process.env.PORT || "7682", 10),
+  host: process.env.HOST || (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1"),
+  dataDir: baseDataDir,
+  projectsDir: path.join(baseDataDir, "projects"),
+  chatsDir: path.join(baseDataDir, "chats"),
+  workspacesDir: path.join(baseDataDir, "workspaces")
+};
+function ensureBaseDirs() {
+  for (const dir of [config.dataDir, config.projectsDir, config.chatsDir, config.workspacesDir]) {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  }
+}
 
 // packages/backend/src/transport/routes.ts
 var import_express = __toESM(require_express2(), 1);
-init_projectService();
 import fsSync8 from "fs";
 
+// packages/backend/src/services/projectService.ts
+import path3 from "path";
+import fs3 from "fs/promises";
+import fsSync2 from "fs";
+import crypto2 from "crypto";
+
+// packages/backend/src/storage/jsonStore.ts
+import fs2 from "fs/promises";
+import fsSync from "fs";
+import path2 from "path";
+import crypto from "crypto";
+var JsonStore = class {
+  /**
+   * Safely writes JSON by writing to a temporary file and atomically renaming.
+   */
+  static async write(filePath, data) {
+    const dir = path2.dirname(filePath);
+    await fs2.mkdir(dir, { recursive: true });
+    const tempPath = `${filePath}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+    const content = JSON.stringify(data, null, 2);
+    await fs2.writeFile(tempPath, content, "utf-8");
+    try {
+      await fs2.rename(tempPath, filePath);
+    } catch (err) {
+      if (err.code === "EPERM" || err.code === "EEXIST" || err.code === "EBUSY") {
+        await new Promise((r) => setTimeout(r, 25));
+        try {
+          await fs2.copyFile(tempPath, filePath);
+          await fs2.unlink(tempPath).catch(() => {
+          });
+        } catch {
+          await fs2.writeFile(filePath, content, "utf-8");
+          await fs2.unlink(tempPath).catch(() => {
+          });
+        }
+      } else {
+        throw err;
+      }
+    }
+  }
+  /**
+   * Reads and parses a JSON file. Returns null if file does not exist.
+   */
+  static async read(filePath) {
+    try {
+      const content = await fs2.readFile(filePath, "utf-8");
+      return JSON.parse(content);
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        return null;
+      }
+      throw err;
+    }
+  }
+  /**
+   * Reads all JSON files in a given directory.
+   */
+  static async list(dirPath) {
+    if (!fsSync.existsSync(dirPath)) {
+      return [];
+    }
+    const files = await fs2.readdir(dirPath);
+    const results = [];
+    for (const file of files) {
+      if (file.endsWith(".json") && !file.includes(".tmp")) {
+        const item = await this.read(path2.join(dirPath, file));
+        if (item) {
+          results.push(item);
+        }
+      }
+    }
+    return results;
+  }
+  /**
+   * Deletes a file safely if it exists.
+   */
+  static async delete(filePath) {
+    try {
+      await fs2.unlink(filePath);
+      return true;
+    } catch (err) {
+      if (err.code === "ENOENT") return false;
+      throw err;
+    }
+  }
+};
+
+// packages/backend/src/services/projectService.ts
+var ProjectService = class {
+  static getProjectMetaPath(id) {
+    return path3.join(config.projectsDir, `${id}.json`);
+  }
+  static slugify(name) {
+    return name.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  }
+  static async createProject(data) {
+    const id = `prj_${crypto2.randomBytes(6).toString("hex")}`;
+    let slug = this.slugify(data.name);
+    const existing = await this.listProjects();
+    const existingSlugs = new Set(existing.map((p) => p.slug));
+    if (existingSlugs.has(slug)) {
+      slug = `${slug}-${crypto2.randomBytes(3).toString("hex")}`;
+    }
+    const now = Date.now();
+    const project = {
+      id,
+      name: data.name.trim(),
+      slug,
+      description: data.description?.trim(),
+      createdAt: now,
+      updatedAt: now,
+      activePorts: []
+    };
+    await JsonStore.write(this.getProjectMetaPath(id), project);
+    const workspacePath = path3.join(config.workspacesDir, slug);
+    await fs3.mkdir(workspacePath, { recursive: true });
+    const readmePath = path3.join(workspacePath, "README.md");
+    if (!fsSync2.existsSync(readmePath)) {
+      await fs3.writeFile(
+        readmePath,
+        `# ${project.name}
+
+${project.description || "Welcome to your isolated project workspace."}
+
+Run dev servers or edit code here.
+`,
+        "utf-8"
+      );
+    }
+    return project;
+  }
+  static async listProjects() {
+    const projects = await JsonStore.list(config.projectsDir);
+    return projects.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+  static async getProject(id) {
+    return JsonStore.read(this.getProjectMetaPath(id));
+  }
+  static async getProjectBySlug(slug) {
+    const projects = await this.listProjects();
+    return projects.find((p) => p.slug === slug) || null;
+  }
+  static async updateProject(id, updates) {
+    const project = await this.getProject(id);
+    if (!project) return null;
+    const updated = {
+      ...project,
+      ...updates,
+      updatedAt: Date.now()
+    };
+    await JsonStore.write(this.getProjectMetaPath(id), updated);
+    return updated;
+  }
+  static async getSecrets(id) {
+    const project = await this.getProject(id);
+    return project?.secrets || {};
+  }
+  static async setSecrets(id, secrets) {
+    await this.updateProject(id, { secrets });
+  }
+  static async deleteProject(id, deleteWorkspace = false) {
+    const project = await this.getProject(id);
+    if (!project) return false;
+    await JsonStore.delete(this.getProjectMetaPath(id));
+    if (deleteWorkspace) {
+      const workspacePath = path3.join(config.workspacesDir, project.slug);
+      try {
+        await fs3.rm(workspacePath, { recursive: true, force: true });
+      } catch {
+      }
+    }
+    return true;
+  }
+};
+
 // packages/backend/src/services/chatService.ts
-init_config();
-init_jsonStore();
 import path4 from "path";
 import fs4 from "fs/promises";
 import fsSync3 from "fs";
@@ -29040,7 +27503,7 @@ var ChatService = class {
       id,
       projectId: data.projectId,
       title: data.title?.trim() || "New Conversation",
-      provider: data.provider || "mock",
+      provider: data.provider || "claude",
       model: data.model || "claude-3-7-sonnet",
       mode: data.mode || "act",
       createdAt: now,
@@ -29092,11 +27555,109 @@ var ChatService = class {
   }
 };
 
-// packages/backend/src/transport/routes.ts
-init_workspaceService();
+// packages/backend/src/services/workspaceService.ts
+import path5 from "path";
+import fs5 from "fs/promises";
+import fsSync4 from "fs";
+var WorkspaceService = class {
+  static getWorkspacePath(slug) {
+    return path5.join(config.workspacesDir, slug);
+  }
+  /**
+   * Safely resolves a path inside the project's workspace, preventing directory traversal.
+   */
+  static resolveSafePath(slug, relativePath = "") {
+    const root = path5.resolve(this.getWorkspacePath(slug));
+    const resolved = path5.resolve(root, relativePath);
+    if (!resolved.startsWith(root + path5.sep) && resolved !== root) {
+      throw new Error("Access denied: Path escapes workspace root");
+    }
+    return resolved;
+  }
+  /**
+   * Recursively lists files in the project's workspace.
+   */
+  static async listFiles(slug, subDir = "") {
+    const targetDir = this.resolveSafePath(slug, subDir);
+    if (!fsSync4.existsSync(targetDir)) {
+      return [];
+    }
+    return this.readDirRecursive(targetDir, this.getWorkspacePath(slug));
+  }
+  static async readDirRecursive(currentDir, rootDir) {
+    const entries = await fs5.readdir(currentDir, { withFileTypes: true });
+    const nodes = [];
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+      const fullPath = path5.join(currentDir, entry.name);
+      const relPath = path5.relative(rootDir, fullPath).replace(/\\/g, "/");
+      if (entry.isDirectory()) {
+        const children = await this.readDirRecursive(fullPath, rootDir);
+        nodes.push({
+          name: entry.name,
+          path: relPath,
+          isDirectory: true,
+          children
+        });
+      } else {
+        const stats = await fs5.stat(fullPath);
+        nodes.push({
+          name: entry.name,
+          path: relPath,
+          isDirectory: false,
+          size: stats.size,
+          updatedAt: stats.mtimeMs
+        });
+      }
+    }
+    return nodes.sort((a, b) => {
+      if (a.isDirectory && !b.isDirectory) return -1;
+      if (!a.isDirectory && b.isDirectory) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+  /**
+   * Reads file content.
+   */
+  static async readFile(slug, relativePath) {
+    const filePath = this.resolveSafePath(slug, relativePath);
+    const stats = await fs5.stat(filePath);
+    const buffer = await fs5.readFile(filePath);
+    const isBinary = buffer.includes(0);
+    return {
+      path: relativePath.replace(/\\/g, "/"),
+      content: isBinary ? buffer.toString("base64") : buffer.toString("utf-8"),
+      isBinary,
+      size: stats.size
+    };
+  }
+  /**
+   * Writes content to a file in the workspace.
+   */
+  static async writeFile(slug, relativePath, content) {
+    const filePath = this.resolveSafePath(slug, relativePath);
+    await fs5.mkdir(path5.dirname(filePath), { recursive: true });
+    await fs5.writeFile(filePath, content, "utf-8");
+  }
+  /**
+   * Creates a directory in the workspace.
+   */
+  static async createDirectory(slug, relativePath) {
+    const dirPath = this.resolveSafePath(slug, relativePath);
+    await fs5.mkdir(dirPath, { recursive: true });
+  }
+  /**
+   * Deletes a file or directory in the workspace.
+   */
+  static async deleteFile(slug, relativePath) {
+    const targetPath = this.resolveSafePath(slug, relativePath);
+    await fs5.rm(targetPath, { recursive: true, force: true });
+  }
+};
 
 // packages/backend/src/storage/eventStore.ts
-init_config();
 import fs6 from "fs/promises";
 import fsSync5 from "fs";
 import path6 from "path";
@@ -29349,8 +27910,750 @@ var GitService = class {
   }
 };
 
-// packages/backend/src/transport/routes.ts
-init_credentialService();
+// packages/backend/src/services/credentialService.ts
+import path8 from "path";
+import os from "os";
+import fsSync7 from "fs";
+import { exec as exec2, spawn } from "child_process";
+var PROVIDER_DEFINITIONS = {
+  claude: {
+    id: "claude",
+    name: "Claude Code",
+    envVar: "ANTHROPIC_API_KEY",
+    cliCommand: "claude",
+    testUrl: "https://api.anthropic.com/v1/models",
+    loginCommand: "claude auth login",
+    logoutCommand: "claude auth logout",
+    hasAccountSupport: true,
+    accountDoc: "Authenticate via Anthropic account OAuth (Claude Pro, Team, or Enterprise subscription)."
+  },
+  codex: {
+    id: "codex",
+    name: "OpenAI Codex",
+    envVar: "OPENAI_API_KEY",
+    cliCommand: "codex",
+    testUrl: "https://api.openai.com/v1/models",
+    loginCommand: "codex login --device-auth",
+    logoutCommand: "codex logout",
+    hasAccountSupport: true,
+    accountDoc: "Authenticate with your OpenAI account credentials."
+  },
+  antigravity: {
+    id: "antigravity",
+    name: "Antigravity",
+    envVar: "GEMINI_API_KEY",
+    cliCommand: "agy",
+    testUrl: "https://generativelanguage.googleapis.com/v1beta/models",
+    loginCommand: "agy",
+    logoutCommand: "",
+    hasAccountSupport: true,
+    accountDoc: "Authenticate with your Google Account or Google AI Studio Gemini key."
+  },
+  opencode: {
+    id: "opencode",
+    name: "OpenCode",
+    envVar: "OPENCODE_API_KEY",
+    cliCommand: "opencode",
+    testUrl: "https://api.openai.com/v1/models",
+    loginCommand: "opencode auth login",
+    logoutCommand: "opencode auth logout",
+    hasAccountSupport: true,
+    accountDoc: "Connect an OpenCode account session or provider integration."
+  },
+  deepseek: {
+    id: "deepseek",
+    name: "DeepSeek",
+    envVar: "DEEPSEEK_API_KEY",
+    cliCommand: "deepseek",
+    testUrl: "https://api.deepseek.com/models",
+    loginCommand: "",
+    logoutCommand: "",
+    hasAccountSupport: false,
+    accountDoc: "Authenticate with direct DeepSeek API Key (DEEPSEEK_API_KEY)."
+  }
+};
+var CredentialService = class {
+  static getCredentialsPath() {
+    return path8.join(config.dataDir, "credentials.json");
+  }
+  static async getAllCredentials() {
+    const data = await JsonStore.read(this.getCredentialsPath());
+    return data || {};
+  }
+  static async setApiKey(provider, apiKey) {
+    const creds = await this.getAllCredentials();
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      delete creds[provider];
+    } else {
+      creds[provider] = trimmed;
+    }
+    await JsonStore.write(this.getCredentialsPath(), creds);
+  }
+  static async setPreferredAuth(provider, method) {
+    const creds = await this.getAllCredentials();
+    creds[`preferred_${provider}`] = method;
+    await JsonStore.write(this.getCredentialsPath(), creds);
+  }
+  static async getApiKey(provider, projectId) {
+    const def = PROVIDER_DEFINITIONS[provider];
+    if (!def) return null;
+    if (projectId) {
+      const secrets = await ProjectService.getSecrets(projectId);
+      if (secrets[def.envVar]) return secrets[def.envVar];
+      if (secrets[provider]) return secrets[provider];
+    }
+    const creds = await this.getAllCredentials();
+    if (creds[provider] && typeof creds[provider] === "string") return creds[provider];
+    if (creds[def.envVar] && typeof creds[def.envVar] === "string") return creds[def.envVar];
+    if (process.env[def.envVar]) return process.env[def.envVar];
+    if (provider === "mock") {
+      return creds.claude || creds.codex || creds.deepseek || creds.antigravity || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.GEMINI_API_KEY || null;
+    }
+    return null;
+  }
+  static checkCliInstalled(command) {
+    if (!command) return Promise.resolve(false);
+    const checkCmd = process.platform === "win32" ? `where ${command}` : `which ${command} || [ -x "$HOME/.local/bin/${command}" ] || [ -x "/root/.local/bin/${command}" ] || [ -x "/usr/local/bin/${command}" ]`;
+    return new Promise((resolve) => {
+      exec2(checkCmd, (err) => {
+        resolve(!err);
+      });
+    });
+  }
+  static getCliInstallCommand(provider) {
+    switch (provider) {
+      case "claude":
+        return "npm install -g @anthropic-ai/claude-code";
+      case "antigravity":
+        return "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+      case "opencode":
+        return "npm install -g @opencode/cli@latest";
+      case "codex":
+        return "npm install -g @openai/codex";
+      default:
+        return "";
+    }
+  }
+  static async installCli(provider) {
+    const installCmd = this.getCliInstallCommand(provider);
+    if (!installCmd) return false;
+    return new Promise((resolve) => {
+      exec2(installCmd, { timeout: 6e4 }, async (err) => {
+        if (err) {
+          resolve(false);
+          return;
+        }
+        if (process.platform !== "win32" && provider === "antigravity") {
+          exec2(
+            'ln -sf "$HOME/.local/bin/agy" /usr/local/bin/agy 2>/dev/null || ln -sf /root/.local/bin/agy /usr/local/bin/agy 2>/dev/null || true'
+          );
+        }
+        const def = PROVIDER_DEFINITIONS[provider];
+        const verified = await this.checkCliInstalled(def?.cliCommand || "");
+        resolve(verified);
+      });
+    });
+  }
+  static maskKey(key) {
+    if (!key || key.length < 8) return "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+    const prefix = key.slice(0, 7);
+    const suffix = key.slice(-4);
+    return `${prefix}\u2022\u2022\u2022\u2022${suffix}`;
+  }
+  static activeSessions = /* @__PURE__ */ new Map();
+  /**
+   * Inspects active account authentication status across CLI tools and session stores
+   */
+  static async checkAccountStatus(provider) {
+    const creds = await this.getAllCredentials();
+    if (creds[`account_${provider}`]?.signedIn) {
+      return {
+        signedIn: true,
+        email: creds[`account_${provider}`].email || "Account Session Active",
+        name: creds[`account_${provider}`].name
+      };
+    }
+    if (provider === "claude") {
+      return new Promise((resolve) => {
+        exec2("claude auth status", { timeout: 2500 }, (_err, stdout, stderr) => {
+          const text = (stdout || "") + (stderr || "");
+          const match = text.match(/\{[\s\S]*\}/);
+          if (match) {
+            try {
+              const data = JSON.parse(match[0]);
+              if (data.loggedIn === true) {
+                resolve({
+                  signedIn: true,
+                  email: data.email || "Claude Account Session",
+                  name: data.organization || data.accountType || "Claude Pro/Team"
+                });
+                return;
+              }
+            } catch {
+            }
+          }
+          const home = os.homedir();
+          const claudeJson = path8.join(home, ".claude.json");
+          if (fsSync7.existsSync(claudeJson)) {
+            try {
+              const content = JSON.parse(fsSync7.readFileSync(claudeJson, "utf-8"));
+              if (content.primaryApiKey || content.oauthAccount) {
+                resolve({
+                  signedIn: true,
+                  email: content.oauthAccount?.email || "Claude Account Active",
+                  name: "Claude Subscription"
+                });
+                return;
+              }
+            } catch {
+            }
+          }
+          resolve({ signedIn: false });
+        });
+      });
+    }
+    if (provider === "codex") {
+      return new Promise((resolve) => {
+        exec2("codex login status", { timeout: 2500 }, (_err, stdout, stderr) => {
+          const text = (stdout || "") + (stderr || "");
+          const lower = text.toLowerCase();
+          if (lower.includes("logged in") && !lower.includes("not logged in")) {
+            resolve({
+              signedIn: true,
+              email: text.trim().split("\n")[0] || "OpenAI Codex Account Active",
+              name: "ChatGPT / Codex Subscription"
+            });
+            return;
+          }
+          const home = os.homedir();
+          const authJson = path8.join(home, ".codex", "auth.json");
+          if (fsSync7.existsSync(authJson)) {
+            try {
+              const data = JSON.parse(fsSync7.readFileSync(authJson, "utf-8"));
+              if (data && (data.access_token || data.refresh_token || data.tokens)) {
+                resolve({
+                  signedIn: true,
+                  email: data.email || "OpenAI Account Active",
+                  name: "ChatGPT / Codex Subscription"
+                });
+                return;
+              }
+            } catch {
+            }
+          }
+          resolve({ signedIn: false });
+        });
+      });
+    }
+    if (provider === "opencode") {
+      return new Promise((resolve) => {
+        exec2("opencode auth list", { timeout: 2500 }, (_err, stdout) => {
+          const out = (stdout || "").trim();
+          if (out && !out.includes("No authenticated integrations")) {
+            resolve({
+              signedIn: true,
+              email: out.split("\n")[0].trim() || "OpenCode Account Connected"
+            });
+          } else {
+            resolve({ signedIn: false });
+          }
+        });
+      });
+    }
+    if (provider === "antigravity") {
+      const creds2 = await this.getAllCredentials();
+      if (creds2["account_antigravity"]?.signedIn) {
+        return {
+          signedIn: true,
+          email: creds2["account_antigravity"].email || "Google Account / Antigravity Active",
+          name: "Antigravity Google Account"
+        };
+      }
+      return new Promise((resolve) => {
+        exec2(
+          "agy models",
+          {
+            timeout: 2500,
+            env: {
+              ...process.env,
+              HOME: process.env.HOME || "/root",
+              PATH: `/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:${process.env.PATH || ""}`
+            }
+          },
+          (err, stdout, stderr) => {
+            const out = (stdout || "") + (stderr || "");
+            if (!err && !out.toLowerCase().includes("sign in") && !out.toLowerCase().includes("error") && out.trim().length > 0) {
+              resolve({
+                signedIn: true,
+                email: "Google Account / Antigravity Active",
+                name: "Antigravity CLI Agent"
+              });
+            } else {
+              resolve({ signedIn: false });
+            }
+          }
+        );
+      });
+    }
+    return { signedIn: false };
+  }
+  /**
+   * Retrieves active login session for a provider
+   */
+  static getLoginSession(provider) {
+    const entry = this.activeSessions.get(provider);
+    return entry ? entry.session : null;
+  }
+  /**
+   * Retrieves comprehensive auth status per provider (combining Account + API Key + CLI)
+   */
+  static async getProviderStatus(projectId) {
+    const statuses = {};
+    const providers = Object.keys(PROVIDER_DEFINITIONS);
+    const creds = await this.getAllCredentials();
+    for (const p of providers) {
+      const def = PROVIDER_DEFINITIONS[p];
+      if (!def) continue;
+      const key = await this.getApiKey(p, projectId);
+      const hasCli = await this.checkCliInstalled(def.cliCommand);
+      const accountAuth = await this.checkAccountStatus(p);
+      const activeSession = this.getLoginSession(p);
+      const preferred = creds[`preferred_${p}`];
+      let authMethod = "none";
+      if (preferred === "account" && accountAuth.signedIn) {
+        authMethod = "account";
+      } else if (preferred === "api_key" && key) {
+        authMethod = "api_key";
+      } else if (accountAuth.signedIn) {
+        authMethod = "account";
+      } else if (key) {
+        authMethod = "api_key";
+      } else if (hasCli) {
+        authMethod = "cli";
+      }
+      statuses[p] = {
+        id: p,
+        name: def.name,
+        configured: Boolean(accountAuth.signedIn || key),
+        authMethod,
+        preferredMethod: preferred || (accountAuth.signedIn ? "account" : key ? "api_key" : void 0),
+        envVar: def.envVar,
+        hasCli,
+        maskedKey: key ? this.maskKey(key) : void 0,
+        accountEmail: accountAuth.email,
+        accountName: accountAuth.name,
+        accountStatus: accountAuth.signedIn ? "signed_in" : "signed_out",
+        hasAccountSupport: def.hasAccountSupport,
+        loginCommand: def.loginCommand,
+        activeSession: activeSession || void 0
+      };
+    }
+    return statuses;
+  }
+  /**
+   * Cancels active interactive login session
+   */
+  static cancelAccountLogin(provider) {
+    const entry = this.activeSessions.get(provider);
+    if (entry) {
+      if (entry.timeout) clearTimeout(entry.timeout);
+      if (entry.child && !entry.child.killed) {
+        try {
+          entry.child.kill("SIGTERM");
+        } catch {
+        }
+      }
+      this.activeSessions.delete(provider);
+    }
+  }
+  /**
+   * Launches interactive account authentication for a provider
+   */
+  static async triggerAccountLogin(provider) {
+    const def = PROVIDER_DEFINITIONS[provider];
+    if (!def) {
+      return {
+        success: false,
+        command: "",
+        message: `Provider ${provider} not found`
+      };
+    }
+    this.cancelAccountLogin(provider);
+    if (def.cliCommand && provider !== "antigravity" && provider !== "deepseek") {
+      let hasCli = await this.checkCliInstalled(def.cliCommand);
+      if (!hasCli) {
+        hasCli = await this.installCli(provider);
+        if (!hasCli) {
+          const installCmd = this.getCliInstallCommand(provider);
+          return {
+            success: false,
+            command: def.loginCommand,
+            message: `CLI tool "${def.cliCommand}" is not installed in PATH. Please install it with: ${installCmd || def.cliCommand}`
+          };
+        }
+      }
+    }
+    const session = {
+      provider,
+      status: "pending",
+      startedAt: Date.now()
+    };
+    if (provider === "codex") {
+      session.flow = "device_code";
+      const child = spawn("codex", ["login", "--device-auth"], {
+        shell: true,
+        env: {
+          ...process.env,
+          PATH: `/usr/local/bin:$HOME/.local/bin:${process.env.PATH || ""}`
+        }
+      });
+      const entry = {
+        session,
+        child
+      };
+      this.activeSessions.set(provider, entry);
+      let buffer = "";
+      const onData = (data) => {
+        buffer += data.toString();
+        const clean = buffer.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+        const urlMatch = clean.match(/https:\/\/[^\s"'<>\x1b]+/);
+        const codeMatch = clean.match(/([A-Z0-9]{4,5}-[A-Z0-9]{4,5})/);
+        if (urlMatch && !session.authUrl) {
+          session.authUrl = urlMatch[0].trim();
+        }
+        if (codeMatch && !session.userCode) {
+          session.userCode = codeMatch[0].trim();
+        }
+      };
+      child.stdout?.on("data", onData);
+      child.stderr?.on("data", onData);
+      child.on("exit", async (code) => {
+        if (code === 0) {
+          session.status = "completed";
+          session.message = "Successfully authenticated with OpenAI Codex account!";
+          const creds = await this.getAllCredentials();
+          creds["account_codex"] = {
+            signedIn: true,
+            email: "ChatGPT / OpenAI Account Session",
+            updatedAt: Date.now()
+          };
+          creds["preferred_codex"] = "account";
+          await JsonStore.write(this.getCredentialsPath(), creds);
+        } else if (session.status !== "completed") {
+          session.status = "failed";
+          session.error = `Codex login exited with code ${code}`;
+        }
+      });
+      entry.timeout = setTimeout(() => {
+        this.cancelAccountLogin(provider);
+      }, 15 * 60 * 1e3);
+      await new Promise((resolve) => {
+        const interval = setInterval(() => {
+          if (session.authUrl && session.userCode) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 150);
+        setTimeout(() => {
+          clearInterval(interval);
+          resolve();
+        }, 2200);
+      });
+      return {
+        success: true,
+        session,
+        command: "codex login --device-auth",
+        message: session.userCode ? `One-time code: ${session.userCode}. Complete sign-in in the opened browser link.` : "Codex device authentication initiated. Open the URL to authorize."
+      };
+    }
+    if (provider === "claude") {
+      session.flow = "oauth_code";
+      session.requiresCodeInput = true;
+      const child = spawn("claude", ["auth", "login"], {
+        shell: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          PATH: `/usr/local/bin:$HOME/.local/bin:${process.env.PATH || ""}`
+        }
+      });
+      const entry = {
+        session,
+        child
+      };
+      this.activeSessions.set(provider, entry);
+      let buffer = "";
+      const onData = (data) => {
+        buffer += data.toString();
+        const clean = buffer.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+        const urlMatch = clean.match(/https:\/\/claude\.ai\/oauth\/authorize[^\s"'<>\x1b]+/);
+        if (urlMatch && !session.authUrl) {
+          session.authUrl = urlMatch[0].trim();
+          session.status = "awaiting_code";
+        }
+      };
+      child.stdout?.on("data", onData);
+      child.stderr?.on("data", onData);
+      child.on("exit", async (code) => {
+        if (code === 0) {
+          session.status = "completed";
+          session.message = "Successfully authenticated with Claude Code account!";
+          const creds = await this.getAllCredentials();
+          creds["account_claude"] = {
+            signedIn: true,
+            email: "Claude Pro/Team Session",
+            updatedAt: Date.now()
+          };
+          creds["preferred_claude"] = "account";
+          await JsonStore.write(this.getCredentialsPath(), creds);
+        } else if (session.status !== "completed") {
+          session.status = "failed";
+          session.error = `Claude auth login exited with code ${code}`;
+        }
+      });
+      entry.timeout = setTimeout(() => {
+        this.cancelAccountLogin(provider);
+      }, 15 * 60 * 1e3);
+      await new Promise((resolve) => {
+        const interval = setInterval(() => {
+          if (session.authUrl) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 150);
+        setTimeout(() => {
+          clearInterval(interval);
+          resolve();
+        }, 2200);
+      });
+      return {
+        success: true,
+        session,
+        command: "claude auth login",
+        message: "Open the authorization link in your browser, then paste the code below."
+      };
+    }
+    if (provider === "antigravity") {
+      session.status = "idle";
+      session.flow = "instructions";
+      session.authUrl = "https://aistudio.google.com/app/apikey";
+      session.message = "Antigravity models run on Google Gemini 2.0. Connect with a free Google AI Studio key (instant 1-click) or enter your Google OAuth session token below.";
+      return {
+        success: true,
+        session,
+        command: "agy",
+        message: session.message
+      };
+    }
+    if (provider === "opencode") {
+      session.status = "idle";
+      session.flow = "token";
+      session.message = 'Enter your OpenCode account token or API key below, or run "opencode auth login" in terminal.';
+      return {
+        success: true,
+        session,
+        command: "opencode auth login",
+        message: session.message
+      };
+    }
+    session.status = "idle";
+    session.flow = "token";
+    session.authUrl = "https://platform.deepseek.com/api_keys";
+    session.message = "DeepSeek authenticates via direct API Key.";
+    return {
+      success: true,
+      session,
+      command: "",
+      message: session.message
+    };
+  }
+  /**
+   * Confirms code for interactive OAuth flows (e.g. Claude Code)
+   */
+  static async confirmAccountCode(provider, code) {
+    const entry = this.activeSessions.get(provider);
+    if (!entry || !entry.child || entry.child.killed) {
+      return {
+        success: false,
+        message: "No active login session waiting for confirmation code."
+      };
+    }
+    const trimmed = code.trim();
+    if (!trimmed) {
+      return { success: false, message: "Authorization code cannot be empty." };
+    }
+    try {
+      entry.child.stdin?.write(`${trimmed}
+`);
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 5e3);
+        entry.child?.once("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      const accountStatus = await this.checkAccountStatus(provider);
+      if (accountStatus.signedIn || entry.session.status === "completed") {
+        entry.session.status = "completed";
+        return {
+          success: true,
+          message: `Successfully authenticated with ${PROVIDER_DEFINITIONS[provider]?.name || provider}!`
+        };
+      }
+      return {
+        success: true,
+        message: "Code submitted. Refreshing account status..."
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Failed to submit code: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Directly saves a long-lived account/session token for a provider
+   */
+  static async saveAccountToken(provider, token) {
+    const trimmed = token.trim();
+    if (!trimmed) {
+      return { success: false, message: "Token cannot be empty" };
+    }
+    const creds = await this.getAllCredentials();
+    creds[`account_${provider}`] = {
+      signedIn: true,
+      email: `${PROVIDER_DEFINITIONS[provider]?.name || provider} Token Session`,
+      token: trimmed,
+      updatedAt: Date.now()
+    };
+    creds[`preferred_${provider}`] = "account";
+    if (provider === "claude") {
+      creds.claude = trimmed;
+      try {
+        const claudeJson = path8.join(os.homedir(), ".claude.json");
+        let current = {};
+        if (fsSync7.existsSync(claudeJson)) {
+          current = JSON.parse(fsSync7.readFileSync(claudeJson, "utf-8"));
+        }
+        current.primaryApiKey = trimmed;
+        fsSync7.writeFileSync(claudeJson, JSON.stringify(current, null, 2));
+      } catch {
+      }
+    } else if (provider === "codex") {
+      creds.codex = trimmed;
+      exec2(
+        `export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; printf "%s" "${trimmed}" | codex login --with-access-token 2>/dev/null || true`
+      );
+    } else if (provider === "antigravity") {
+      creds.antigravity = trimmed;
+      creds.GEMINI_API_KEY = trimmed;
+    } else if (provider === "deepseek") {
+      creds.deepseek = trimmed;
+    } else if (provider === "opencode") {
+      creds.opencode = trimmed;
+    }
+    await JsonStore.write(this.getCredentialsPath(), creds);
+    return {
+      success: true,
+      message: `Saved session token for ${PROVIDER_DEFINITIONS[provider]?.name || provider}!`
+    };
+  }
+  /**
+   * Logs out account session for a provider
+   */
+  static async logoutAccount(provider) {
+    const def = PROVIDER_DEFINITIONS[provider];
+    const creds = await this.getAllCredentials();
+    delete creds[`account_${provider}`];
+    await JsonStore.write(this.getCredentialsPath(), creds);
+    if (def && def.logoutCommand) {
+      const hasCli = await this.checkCliInstalled(def.cliCommand);
+      if (hasCli) {
+        await new Promise((resolve) => {
+          exec2(def.logoutCommand, { timeout: 3e3 }, () => resolve());
+        });
+      }
+    }
+    return {
+      success: true,
+      message: `Signed out of ${def?.name || provider} account session.`
+    };
+  }
+  /**
+   * Tests API key validity against live provider endpoint
+   */
+  static async testApiKey(provider, apiKey) {
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      return { success: false, message: "API key cannot be empty" };
+    }
+    try {
+      if (provider === "claude") {
+        const res = await fetch("https://api.anthropic.com/v1/models", {
+          headers: {
+            "x-api-key": trimmed,
+            "anthropic-version": "2023-06-01"
+          }
+        });
+        if (res.ok) {
+          return { success: true, message: "Anthropic Claude API key verified successfully!" };
+        }
+        const err = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          message: err.error?.message || `Anthropic returned HTTP ${res.status}`
+        };
+      }
+      if (provider === "codex" || provider === "opencode") {
+        const res = await fetch("https://api.openai.com/v1/models", {
+          headers: {
+            Authorization: `Bearer ${trimmed}`
+          }
+        });
+        if (res.ok) {
+          return { success: true, message: "OpenAI API key verified successfully!" };
+        }
+        const err = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          message: err.error?.message || `OpenAI returned HTTP ${res.status}`
+        };
+      }
+      if (provider === "deepseek") {
+        const res = await fetch("https://api.deepseek.com/models", {
+          headers: {
+            Authorization: `Bearer ${trimmed}`
+          }
+        });
+        if (res.ok) {
+          return { success: true, message: "DeepSeek API key verified successfully!" };
+        }
+        const err = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          message: err.error?.message || `DeepSeek returned HTTP ${res.status}`
+        };
+      }
+      if (provider === "antigravity") {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmed)}`
+        );
+        if (res.ok) {
+          return { success: true, message: "Google Gemini/Antigravity API key verified successfully!" };
+        }
+        const err = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          message: err.error?.message || `Google returned HTTP ${res.status}`
+        };
+      }
+      return { success: true, message: "API key format valid." };
+    } catch (err) {
+      return { success: false, message: `Connection test failed: ${err.message}` };
+    }
+  }
+};
 
 // packages/backend/src/transport/previewProxy.ts
 import http from "http";
@@ -29764,10 +29067,6 @@ function createApiRouter() {
 // packages/backend/src/transport/chatWs.ts
 import { URL as URL2 } from "url";
 
-// packages/backend/src/services/promptService.ts
-init_projectService();
-init_workspaceService();
-
 // packages/backend/src/services/runHub.ts
 var RunHub = class {
   static activeRuns = /* @__PURE__ */ new Map();
@@ -29847,13 +29146,443 @@ var RunHub = class {
   }
 };
 
-// packages/backend/src/harness/harnessRegistry.ts
-init_autonomousHarness();
+// packages/backend/src/harness/autonomousHarness.ts
+import path9 from "path";
+
+// packages/backend/src/harness/tools.ts
+import { exec as exec3 } from "child_process";
+var agentTools = {
+  read_file: {
+    name: "read_file",
+    description: "Read the contents of a file in the workspace",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative file path" }
+      },
+      required: ["path"]
+    },
+    execute: async (_workspacePath, slug, args) => {
+      try {
+        const file = await WorkspaceService.readFile(slug, args.path);
+        return file.content;
+      } catch (err) {
+        return `Error reading file: ${err.message}`;
+      }
+    }
+  },
+  write_file: {
+    name: "write_file",
+    description: "Create or overwrite a file in the workspace",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative file path" },
+        content: { type: "string", description: "Full text content to write" }
+      },
+      required: ["path", "content"]
+    },
+    execute: async (_workspacePath, slug, args) => {
+      try {
+        await WorkspaceService.writeFile(slug, args.path, args.content);
+        return `Successfully wrote ${args.content.length} bytes to ${args.path}`;
+      } catch (err) {
+        return `Error writing file: ${err.message}`;
+      }
+    }
+  },
+  list_files: {
+    name: "list_files",
+    description: "List files and directories in the workspace",
+    parameters: {
+      type: "object",
+      properties: {
+        subDir: { type: "string", description: "Optional sub-directory" }
+      }
+    },
+    execute: async (_workspacePath, slug, args) => {
+      try {
+        const files = await WorkspaceService.listFiles(slug, args.subDir || "");
+        return JSON.stringify(files.map((f) => ({ name: f.name, path: f.path, isDir: f.isDirectory })), null, 2);
+      } catch (err) {
+        return `Error listing files: ${err.message}`;
+      }
+    }
+  },
+  run_command: {
+    name: "run_command",
+    description: "Execute a shell command inside the project computer workspace",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The command to execute" }
+      },
+      required: ["command"]
+    },
+    execute: (workspacePath, _slug, args) => {
+      return new Promise((resolve) => {
+        exec3(args.command, { cwd: workspacePath, timeout: 3e4 }, (error, stdout, stderr) => {
+          if (error) {
+            resolve(`Command failed: ${error.message}
+${stderr}`);
+          } else {
+            resolve(stdout || stderr || "Command executed with no output.");
+          }
+        });
+      });
+    }
+  }
+};
+
+// packages/backend/src/harness/realLlmEngine.ts
+var RealLlmEngine = class {
+  /**
+   * Runs an autonomous tool loop using a real LLM API (Anthropic, OpenAI, DeepSeek)
+   */
+  static async run(params) {
+    const { provider, apiKey } = params;
+    if (provider === "claude") {
+      return this.runAnthropic(params);
+    } else if (provider === "codex" || provider === "deepseek" || provider === "opencode" || provider === "antigravity") {
+      return this.runOpenAiCompatible(params);
+    }
+    return false;
+  }
+  /**
+   * Anthropic Messages API Tool Loop
+   */
+  static async runAnthropic(params) {
+    const { apiKey, model, prompt, workspacePath, slug, turnId, signal, onEvent } = params;
+    await onEvent({
+      type: "reasoning_delta",
+      turnId,
+      text: `Authenticating with Anthropic API...
+Connecting to model: ${model || "claude-3-7-sonnet-20250219"}`
+    });
+    const anthropicTools = [
+      {
+        name: "list_files",
+        description: agentTools.list_files.description,
+        input_schema: agentTools.list_files.parameters
+      },
+      {
+        name: "read_file",
+        description: agentTools.read_file.description,
+        input_schema: agentTools.read_file.parameters
+      },
+      {
+        name: "write_file",
+        description: agentTools.write_file.description,
+        input_schema: agentTools.write_file.parameters
+      },
+      {
+        name: "run_command",
+        description: agentTools.run_command.description,
+        input_schema: agentTools.run_command.parameters
+      }
+    ];
+    const messages = [{ role: "user", content: prompt }];
+    const systemPrompt = `You are an elite autonomous software engineering agent running inside an isolated project computer.
+Workspace root: ${workspacePath}
+You have access to workspace tools: list_files, read_file, write_file, run_command.
+Inspect existing files, write clean code, install required packages, run build scripts, and verify your work.`;
+    let maxSteps = 6;
+    while (maxSteps-- > 0 && !signal?.aborted) {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: model.includes("claude") ? "claude-3-7-sonnet-20250219" : "claude-3-5-sonnet-20241022",
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages,
+          tools: anthropicTools
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `Anthropic API error HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const content = data.content || [];
+      const toolCalls = [];
+      for (const block of content) {
+        if (block.type === "text" && block.text) {
+          await onEvent({
+            type: "text_delta",
+            turnId,
+            text: block.text
+          });
+        } else if (block.type === "tool_use") {
+          toolCalls.push(block);
+        }
+      }
+      if (toolCalls.length === 0) {
+        if (data.usage) {
+          await onEvent({
+            type: "turn_completed",
+            turnId,
+            usage: {
+              promptTokens: data.usage.input_tokens,
+              completionTokens: data.usage.output_tokens,
+              totalTokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
+            }
+          });
+        }
+        return true;
+      }
+      messages.push({ role: "assistant", content });
+      const toolResults = [];
+      for (const tc of toolCalls) {
+        if (signal?.aborted) break;
+        await onEvent({
+          type: "tool_started",
+          turnId,
+          toolName: tc.name,
+          toolCallId: tc.id,
+          input: tc.input
+        });
+        const toolDef = agentTools[tc.name];
+        let output = "";
+        if (toolDef) {
+          output = await toolDef.execute(workspacePath, slug, tc.input);
+        } else {
+          output = `Error: Tool ${tc.name} not found.`;
+        }
+        await onEvent({
+          type: "tool_finished",
+          turnId,
+          toolName: tc.name,
+          toolCallId: tc.id,
+          output
+        });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tc.id,
+          content: output
+        });
+      }
+      messages.push({ role: "user", content: toolResults });
+    }
+    return true;
+  }
+  /**
+   * OpenAI / DeepSeek Chat Completions Tool Loop
+   */
+  static async runOpenAiCompatible(params) {
+    const { provider, apiKey, model, prompt, workspacePath, slug, turnId, signal, onEvent } = params;
+    const baseUrl = provider === "deepseek" ? "https://api.deepseek.com/chat/completions" : provider === "antigravity" ? "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" : "https://api.openai.com/v1/chat/completions";
+    const actualModel = provider === "deepseek" ? "deepseek-chat" : provider === "antigravity" ? "gemini-2.0-flash" : model || "gpt-4o";
+    await onEvent({
+      type: "reasoning_delta",
+      turnId,
+      text: `Authenticating with ${provider.toUpperCase()} API...
+Connecting to model: ${actualModel}`
+    });
+    const openAiTools = [
+      {
+        type: "function",
+        function: {
+          name: "list_files",
+          description: agentTools.list_files.description,
+          parameters: agentTools.list_files.parameters
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: agentTools.read_file.description,
+          parameters: agentTools.read_file.parameters
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "write_file",
+          description: agentTools.write_file.description,
+          parameters: agentTools.write_file.parameters
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "run_command",
+          description: agentTools.run_command.description,
+          parameters: agentTools.run_command.parameters
+        }
+      }
+    ];
+    const messages = [
+      {
+        role: "system",
+        content: `You are an elite autonomous software engineering agent inside an isolated project computer at ${workspacePath}. Use tools to inspect, author files, and run commands.`
+      },
+      { role: "user", content: prompt }
+    ];
+    let maxSteps = 6;
+    while (maxSteps-- > 0 && !signal?.aborted) {
+      const res = await fetch(baseUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: actualModel,
+          messages,
+          tools: openAiTools
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `${provider} API error HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const choice = data.choices?.[0];
+      if (!choice) break;
+      const assistantMsg = choice.message;
+      messages.push(assistantMsg);
+      if (assistantMsg.content) {
+        await onEvent({
+          type: "text_delta",
+          turnId,
+          text: assistantMsg.content
+        });
+      }
+      const toolCalls = assistantMsg.tool_calls || [];
+      if (toolCalls.length === 0) {
+        if (data.usage) {
+          await onEvent({
+            type: "turn_completed",
+            turnId,
+            usage: {
+              promptTokens: data.usage.prompt_tokens,
+              completionTokens: data.usage.completion_tokens,
+              totalTokens: data.usage.total_tokens
+            }
+          });
+        }
+        return true;
+      }
+      for (const tc of toolCalls) {
+        if (signal?.aborted) break;
+        let parsedArgs = {};
+        try {
+          parsedArgs = JSON.parse(tc.function.arguments || "{}");
+        } catch {
+          parsedArgs = {};
+        }
+        await onEvent({
+          type: "tool_started",
+          turnId,
+          toolName: tc.function.name,
+          toolCallId: tc.id,
+          input: parsedArgs
+        });
+        const toolDef = agentTools[tc.function.name];
+        let output = "";
+        if (toolDef) {
+          output = await toolDef.execute(workspacePath, slug, parsedArgs);
+        } else {
+          output = `Error: Tool ${tc.function.name} not found.`;
+        }
+        await onEvent({
+          type: "tool_finished",
+          turnId,
+          toolName: tc.function.name,
+          toolCallId: tc.id,
+          output
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: output
+        });
+      }
+    }
+    return true;
+  }
+};
+
+// packages/backend/src/harness/autonomousHarness.ts
+var AutonomousHarness = class {
+  id = "mock";
+  async run(req) {
+    const { prompt, workspacePath, projectId, signal, onEvent } = req;
+    const turnId = `turn_${Date.now()}`;
+    const project = await ProjectService.getProject(projectId);
+    const slug = project?.slug || path9.basename(workspacePath);
+    if (signal?.aborted) return;
+    const apiKey = await CredentialService.getApiKey("mock", projectId);
+    if (apiKey) {
+      const allCreds = await CredentialService.getAllCredentials();
+      let realProvider = "claude";
+      let keyToUse = apiKey;
+      if (allCreds.claude || process.env.ANTHROPIC_API_KEY) {
+        realProvider = "claude";
+        keyToUse = allCreds.claude || process.env.ANTHROPIC_API_KEY;
+      } else if (allCreds.deepseek || process.env.DEEPSEEK_API_KEY) {
+        realProvider = "deepseek";
+        keyToUse = allCreds.deepseek || process.env.DEEPSEEK_API_KEY;
+      } else if (allCreds.antigravity || process.env.GEMINI_API_KEY) {
+        realProvider = "antigravity";
+        keyToUse = allCreds.antigravity || process.env.GEMINI_API_KEY;
+      } else if (allCreds.codex || allCreds.opencode || process.env.OPENAI_API_KEY) {
+        realProvider = "codex";
+        keyToUse = allCreds.codex || allCreds.opencode || process.env.OPENAI_API_KEY;
+      }
+      try {
+        const handled = await RealLlmEngine.run({
+          provider: realProvider,
+          apiKey: keyToUse,
+          model: req.model,
+          prompt,
+          workspacePath,
+          slug,
+          turnId,
+          signal,
+          onEvent
+        });
+        if (handled) return;
+      } catch (err) {
+        await onEvent({
+          type: "error",
+          turnId,
+          text: `Real LLM engine returned an issue: ${err.message}`,
+          isError: true
+        });
+        await onEvent({ type: "turn_completed", turnId });
+        return;
+      }
+    }
+    await onEvent({
+      type: "text_delta",
+      turnId,
+      text: `### No AI Model Provider Connected
+
+To chat and run tasks in this workspace, please configure at least one AI provider:
+
+- **Claude Code**: Anthropic Claude API Key or Claude subscription
+- **OpenAI Codex**: OpenAI API Key or ChatGPT subscription
+- **Antigravity**: Free Google AI Studio Gemini Key or Google account
+- **DeepSeek**: DeepSeek API Key
+
+Click the **Key icon** in the top header or provider selector to connect your credentials.`
+    });
+    if (signal?.aborted) return;
+    await onEvent({
+      type: "turn_completed",
+      turnId
+    });
+  }
+};
 
 // packages/backend/src/harness/cliHarness.ts
-init_credentialService();
-init_projectService();
-init_realLlmEngine();
 import { spawn as spawn2 } from "child_process";
 import readline2 from "readline";
 import path10 from "path";
@@ -29875,13 +29604,24 @@ var CliHarness = class {
     const creds = await CredentialService.getAllCredentials();
     const preferred = creds[`preferred_${this.id}`];
     const useAccount = hasCli && accountAuth.signedIn && (preferred === "account" || !apiKey);
-    if (!useAccount && !hasCli && apiKey) {
+    if (!useAccount && !apiKey) {
       await onEvent({
-        type: "reasoning_delta",
+        type: "text_delta",
         turnId,
-        text: `CLI binary "${this.command}" not detected in PATH, but authenticated ${def?.name || this.id} API key is active.
-Connecting directly to real LLM tool runtime...`
+        text: `### Authentication Required for ${def?.name || this.id}
+
+No active account session or API key was found for **${def?.name || this.id}**.
+
+To chat and run tasks with this provider:
+1. Open **Provider Authentication** (key icon in the top header)
+2. Connect your **Account** or configure a direct **API Key**
+
+Once connected, your prompts will be processed live.`
       });
+      await onEvent({ type: "turn_completed", turnId });
+      return;
+    }
+    if (apiKey && (!useAccount || preferred === "api_key")) {
       try {
         const handled = await RealLlmEngine.run({
           provider: this.id,
@@ -29899,21 +29639,12 @@ Connecting directly to real LLM tool runtime...`
         await onEvent({
           type: "error",
           turnId,
-          text: `Real LLM execution error: ${llmErr.message}. Falling back to autonomous workspace runtime...`,
+          text: `Real LLM execution error: ${llmErr.message}`,
           isError: true
         });
+        await onEvent({ type: "turn_completed", turnId });
+        return;
       }
-    }
-    if (!useAccount && !hasCli && !apiKey) {
-      await onEvent({
-        type: "reasoning_delta",
-        turnId,
-        text: `Provider Notice: No active account login or API key found for ${def?.name || this.id}.
-To authenticate, open the Provider Authentication modal and click "Sign in with Account" or enter your API key.
-Engaging autonomous workspace runtime...`
-      });
-      const { AutonomousHarness: AutonomousHarness2 } = await Promise.resolve().then(() => (init_autonomousHarness(), autonomousHarness_exports));
-      return new AutonomousHarness2().run(req);
     }
     const authDesc = useAccount ? `active ${def?.name || this.id} account session (${accountAuth.email || "OAuth"})` : `authenticated environment credentials`;
     await onEvent({
@@ -29923,15 +29654,15 @@ Engaging autonomous workspace runtime...`
     });
     let cmdArgs = [];
     if (this.id === "claude") {
-      cmdArgs = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+      cmdArgs = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
     } else if (this.id === "codex") {
-      cmdArgs = ["exec", "--dangerously-skip-permissions"];
+      cmdArgs = ["exec", "--dangerously-skip-permissions", prompt];
     } else if (this.id === "antigravity") {
-      cmdArgs = ["run", "--format", "json"];
+      cmdArgs = ["-p", prompt, "--dangerously-skip-permissions"];
     } else if (this.id === "opencode") {
-      cmdArgs = ["run", "--format", "stream-json"];
+      cmdArgs = ["run", "--auto", prompt];
     } else if (this.id === "deepseek") {
-      cmdArgs = ["exec", "--model", "deepseek-r1"];
+      cmdArgs = ["exec", "--model", "deepseek-r1", prompt];
     }
     await onEvent({
       type: "reasoning_delta",
@@ -29947,6 +29678,8 @@ Engaging autonomous workspace runtime...`
           ...process.env,
           ...projectSecrets,
           IS_SANDBOX: "1",
+          HOME: process.env.HOME || "/root",
+          PATH: `/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:${process.env.PATH || ""}`,
           ...apiKey && def ? { [def.envVar]: apiKey } : {}
         }
       });
@@ -30015,6 +29748,7 @@ Engaging autonomous workspace runtime...`
             text: `Agent CLI exited with code ${code}`,
             isError: true
           });
+          onEvent({ type: "turn_completed", turnId });
           resolve();
         }
       });
@@ -30045,27 +29779,19 @@ Engaging autonomous workspace runtime...`
             await onEvent({
               type: "error",
               turnId,
-              text: `API fallback error: ${apiErr.message}`,
+              text: `API execution error: ${apiErr.message}`,
               isError: true
             });
           }
-        }
-        await onEvent({
-          type: "status",
-          turnId,
-          text: `Engaging autonomous workspace runtime fallback...`
-        });
-        try {
-          const { AutonomousHarness: AutonomousHarness2 } = await Promise.resolve().then(() => (init_autonomousHarness(), autonomousHarness_exports));
-          await new AutonomousHarness2().run(req);
-        } catch (fallbackErr) {
-          onEvent({
+        } else {
+          await onEvent({
             type: "error",
             turnId,
-            text: `Runtime error: ${fallbackErr.message}`,
+            text: `CLI execution error: ${err.message}`,
             isError: true
           });
         }
+        onEvent({ type: "turn_completed", turnId });
         resolve();
       });
     });
@@ -30248,8 +29974,6 @@ function setupChatWebSocket(wss) {
 }
 
 // packages/backend/src/transport/terminalWs.ts
-init_projectService();
-init_workspaceService();
 import { spawn as spawn3 } from "child_process";
 import os2 from "os";
 function setupTerminalWebSocket(wss) {
