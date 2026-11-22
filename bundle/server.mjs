@@ -27726,10 +27726,44 @@ var init_credentialService = __esm({
       }
       static checkCliInstalled(command) {
         if (!command) return Promise.resolve(false);
-        const checkCmd = process.platform === "win32" ? `where ${command}` : `which ${command}`;
+        const checkCmd = process.platform === "win32" ? `where ${command}` : `which ${command} || [ -x "$HOME/.local/bin/${command}" ] || [ -x "/root/.local/bin/${command}" ] || [ -x "/usr/local/bin/${command}" ]`;
         return new Promise((resolve) => {
           exec2(checkCmd, (err) => {
             resolve(!err);
+          });
+        });
+      }
+      static getCliInstallCommand(provider) {
+        switch (provider) {
+          case "claude":
+            return "npm install -g @anthropic-ai/claude-code";
+          case "antigravity":
+            return "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+          case "opencode":
+            return "npm install -g @opencode/cli@latest";
+          case "codex":
+            return "npm install -g @openai/codex";
+          default:
+            return "";
+        }
+      }
+      static async installCli(provider) {
+        const installCmd = this.getCliInstallCommand(provider);
+        if (!installCmd) return false;
+        return new Promise((resolve) => {
+          exec2(installCmd, { timeout: 6e4 }, async (err) => {
+            if (err) {
+              resolve(false);
+              return;
+            }
+            if (process.platform !== "win32" && provider === "antigravity") {
+              exec2(
+                'ln -sf "$HOME/.local/bin/agy" /usr/local/bin/agy 2>/dev/null || ln -sf /root/.local/bin/agy /usr/local/bin/agy 2>/dev/null || true'
+              );
+            }
+            const def = PROVIDER_DEFINITIONS[provider];
+            const verified = await this.checkCliInstalled(def?.cliCommand || "");
+            resolve(verified);
           });
         });
       }
@@ -27871,16 +27905,24 @@ var init_credentialService = __esm({
             message: `Account authentication not supported for ${provider}`
           };
         }
-        const hasCli = await this.checkCliInstalled(def.cliCommand);
+        let hasCli = await this.checkCliInstalled(def.cliCommand);
         if (!hasCli) {
-          return {
-            success: false,
-            command: def.loginCommand,
-            message: `CLI tool "${def.cliCommand}" is not installed in PATH. Please install it first or use API Key authentication.`
-          };
+          hasCli = await this.installCli(provider);
+          if (!hasCli) {
+            const installCmd = this.getCliInstallCommand(provider);
+            return {
+              success: false,
+              command: def.loginCommand,
+              message: `CLI tool "${def.cliCommand}" is not installed in PATH. Please install it with: ${installCmd || def.cliCommand}`
+            };
+          }
         }
         try {
-          const child = spawn(def.loginCommand, {
+          let runCmd = def.loginCommand;
+          if (process.platform !== "win32") {
+            runCmd = `export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; ${def.loginCommand}`;
+          }
+          const child = spawn(runCmd, {
             shell: true,
             detached: true,
             stdio: "ignore"

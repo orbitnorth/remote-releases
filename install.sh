@@ -68,7 +68,21 @@ if ! command -v pm2 >/dev/null 2>&1; then
 fi
 echo -e "${GREEN}[✓]${NC} PM2 ready: $(pm2 -v)"
 
-# 5. Extract / Deploy Standalone Program Bundle
+# 5. Install AI Agent Harness CLIs (Claude, Antigravity, OpenCode, Codex)
+echo -e "${BLUE}==>${NC} Installing AI harness CLIs (Claude Code, Antigravity, OpenCode, Codex)..."
+npm install -g @anthropic-ai/claude-code @opencode/cli@latest @openai/codex 2>/dev/null || true
+if ! command -v agy >/dev/null 2>&1; then
+  echo "    Installing Google Antigravity (agy) CLI..."
+  curl -fsSL https://antigravity.google/cli/install.sh | bash 2>/dev/null || true
+  if [ -f "$HOME/.local/bin/agy" ]; then
+    ln -sf "$HOME/.local/bin/agy" /usr/local/bin/agy 2>/dev/null || true
+  elif [ -f "/root/.local/bin/agy" ]; then
+    ln -sf "/root/.local/bin/agy" /usr/local/bin/agy 2>/dev/null || true
+  fi
+fi
+echo -e "${GREEN}[✓]${NC} AI harness CLIs ready: claude, agy, opencode, codex"
+
+# 6. Extract / Deploy Standalone Program Bundle
 echo -e "${BLUE}==>${NC} Deploying Remote bundled program to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}" "${DATA_DIR}"
 
