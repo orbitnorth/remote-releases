@@ -1,0 +1,13 @@
+{
+  "name": "@orbitnorth/remote",
+  "version": "0.1.0",
+  "description": "Lightweight self-hosted control plane for autonomous coding agents",
+  "type": "module",
+  "main": "server.mjs",
+  "bin": {
+    "remote": "./bin/remote"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=OrbitNorth Remote Control Plane
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/remote
+ExecStart=/usr/bin/node /opt/remote/server.mjs
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=7682
+Environment=HOST=0.0.0.0
+Environment=REMOTE_DATA_DIR=/opt/remote/data
+
+[Install]
+WantedBy=multi-user.target
