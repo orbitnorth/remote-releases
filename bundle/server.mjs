@@ -29901,7 +29901,7 @@ Once connected, your prompts will be processed live.`
     } else if (this.id === "codex") {
       cmdArgs = ["exec", "--dangerously-skip-permissions", prompt];
     } else if (this.id === "antigravity") {
-      cmdArgs = ["-p", prompt, "--dangerously-skip-permissions"];
+      cmdArgs = ["--dangerously-skip-permissions", "--output-format", "stream-json", "-p", prompt];
     } else if (this.id === "opencode") {
       cmdArgs = ["run", "--auto", prompt];
     } else if (this.id === "deepseek") {
@@ -29915,9 +29915,10 @@ Once connected, your prompts will be processed live.`
     const projectSecrets = await ProjectService.getSecrets(projectId) || {};
     return new Promise((resolve) => {
       const homeDir = process.env.HOME || "/root";
+      const useShell = process.platform === "win32";
       const child = spawn2(this.command, cmdArgs, {
         cwd: workspacePath,
-        shell: true,
+        shell: useShell,
         env: {
           ...process.env,
           ...projectSecrets,
@@ -29933,7 +29934,9 @@ Once connected, your prompts will be processed live.`
         });
       }
       if (child.stdin) {
-        child.stdin.write(prompt + "\n");
+        if (this.id === "opencode") {
+          child.stdin.write(prompt + "\n");
+        }
         child.stdin.end();
       }
       const rlStdout = readline2.createInterface({ input: child.stdout });
@@ -29942,12 +29945,56 @@ Once connected, your prompts will be processed live.`
         if (!trimmed) return;
         try {
           const parsed = JSON.parse(trimmed);
+          if (parsed.event) {
+            if (parsed.event === "step_update" && parsed.step_update) {
+              const su = parsed.step_update;
+              if (su.step_type === "agent_response" && su.text_delta) {
+                onEvent({
+                  type: "text_delta",
+                  turnId,
+                  text: su.text_delta
+                });
+              } else if (su.step_type === "tool") {
+                if (su.state === "ACTIVE") {
+                  onEvent({
+                    type: "tool_started",
+                    turnId,
+                    toolName: su.tool_name || su.tool_info?.name || "tool",
+                    toolCallId: `call_${su.step_index || Date.now()}`,
+                    input: su.tool_info?.parameters
+                  });
+                } else if (su.state === "DONE") {
+                  onEvent({
+                    type: "tool_finished",
+                    turnId,
+                    toolCallId: `call_${su.step_index || Date.now()}`,
+                    output: typeof su.tool_info?.output === "string" ? su.tool_info.output : JSON.stringify(su.tool_info?.output || "")
+                  });
+                }
+              }
+            }
+            return;
+          }
           if (parsed.type === "assistant" || parsed.type === "text_delta") {
             onEvent({
               type: "text_delta",
               turnId,
               text: parsed.text || parsed.message || trimmed
             });
+          } else if (parsed.type === "content_block_delta") {
+            if (parsed.delta?.type === "text_delta") {
+              onEvent({
+                type: "text_delta",
+                turnId,
+                text: parsed.delta.text || ""
+              });
+            } else if (parsed.delta?.type === "thinking_delta") {
+              onEvent({
+                type: "reasoning_delta",
+                turnId,
+                text: parsed.delta.thinking || ""
+              });
+            }
           } else if (parsed.type === "tool_use" || parsed.type === "tool_started") {
             onEvent({
               type: "tool_started",
@@ -29955,12 +30002,6 @@ Once connected, your prompts will be processed live.`
               toolName: parsed.name || parsed.toolName,
               toolCallId: parsed.id || `call_${Date.now()}`,
               input: parsed.input
-            });
-          } else {
-            onEvent({
-              type: "text_delta",
-              turnId,
-              text: trimmed + "\n"
             });
           }
         } catch {
