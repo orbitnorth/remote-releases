@@ -27874,24 +27874,20 @@ var init_credentialService = __esm({
           });
         }
         if (provider === "antigravity") {
-          const home = os.homedir();
-          const agyDir1 = path8.join(home, ".gemini", "antigravity");
-          const agyDir2 = path8.join(home, ".gemini", "antigravity-cli");
-          const hasGeminiKey = Boolean(creds.antigravity || creds.GEMINI_API_KEY || process.env.GEMINI_API_KEY);
-          if (hasGeminiKey) {
-            return {
-              signedIn: true,
-              email: "Google AI Studio / Gemini Connected",
-              name: "Gemini 2.0 Flash / Pro"
-            };
-          }
-          if (fsSync7.existsSync(agyDir1) || fsSync7.existsSync(agyDir2)) {
-            return {
-              signedIn: true,
-              email: "Google Account / Antigravity Active",
-              name: "Antigravity CLI Agent"
-            };
-          }
+          return new Promise((resolve) => {
+            exec2("agy models", { timeout: 2e3 }, (err, stdout, stderr) => {
+              const out = (stdout || "") + (stderr || "");
+              if (!err && !out.toLowerCase().includes("sign in") && !out.toLowerCase().includes("error") && out.trim().length > 0) {
+                resolve({
+                  signedIn: true,
+                  email: "Google Account / Antigravity Active",
+                  name: "Antigravity CLI Agent"
+                });
+              } else {
+                resolve({ signedIn: false });
+              }
+            });
+          });
         }
         return { signedIn: false };
       }
@@ -27931,7 +27927,7 @@ var init_credentialService = __esm({
           statuses[p] = {
             id: p,
             name: def.name,
-            configured: Boolean(accountAuth.signedIn || key || hasCli && p === "antigravity" || p === "mock"),
+            configured: Boolean(accountAuth.signedIn || key || p === "mock"),
             authMethod,
             preferredMethod: preferred || (accountAuth.signedIn ? "account" : key ? "api_key" : void 0),
             envVar: def.envVar,
