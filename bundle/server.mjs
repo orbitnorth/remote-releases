@@ -28014,9 +28014,16 @@ var CredentialService = class {
   }
   static checkCliInstalled(command) {
     if (!command) return Promise.resolve(false);
-    const checkCmd = process.platform === "win32" ? `where ${command}` : `which ${command} || [ -x "$HOME/.local/bin/${command}" ] || [ -x "/root/.local/bin/${command}" ] || [ -x "/usr/local/bin/${command}" ]`;
+    const homeDir = process.env.HOME || os.homedir() || "/root";
+    const checkCmd = process.platform === "win32" ? `where ${command}` : `which ${command} || [ -x "${homeDir}/.local/bin/${command}" ] || [ -x "/root/.local/bin/${command}" ] || [ -x "/usr/local/bin/${command}" ]`;
     return new Promise((resolve) => {
-      exec2(checkCmd, (err) => {
+      exec2(checkCmd, {
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          PATH: `/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin:${process.env.PATH || ""}`
+        }
+      }, (err) => {
         resolve(!err);
       });
     });
@@ -28164,33 +28171,40 @@ var CredentialService = class {
     if (provider === "antigravity") {
       const creds2 = await this.getAllCredentials();
       if (creds2["account_antigravity"]?.signedIn) {
+        const token = creds2["account_antigravity"]?.token;
+        if (!token) {
+          delete creds2["account_antigravity"];
+          await JsonStore.write(this.getCredentialsPath(), creds2);
+          return { signedIn: false };
+        }
         return {
           signedIn: true,
           email: creds2["account_antigravity"].email || "Google Account / Antigravity Active",
           name: "Antigravity Google Account"
         };
       }
+      const homeDir = process.env.HOME || os.homedir() || "/root";
       return new Promise((resolve) => {
         exec2(
           "agy models",
           {
-            timeout: 2500,
+            timeout: 3e3,
             env: {
               ...process.env,
-              HOME: process.env.HOME || "/root",
-              PATH: `/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:${process.env.PATH || ""}`
+              HOME: homeDir,
+              PATH: `/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin:${process.env.PATH || ""}`
             }
           },
           (err, stdout, stderr) => {
-            const out = (stdout || "") + (stderr || "");
-            if (!err && !out.toLowerCase().includes("sign in") && !out.toLowerCase().includes("error") && out.trim().length > 0) {
+            const out = ((stdout || "") + (stderr || "")).toLowerCase();
+            if (err || out.includes("sign in") || out.includes("error") || out.includes("not authenticated") || out.includes("unauthorized") || out.trim().length === 0) {
+              resolve({ signedIn: false });
+            } else {
               resolve({
                 signedIn: true,
                 email: "Google Account / Antigravity Active",
                 name: "Antigravity CLI Agent"
               });
-            } else {
-              resolve({ signedIn: false });
             }
           }
         );
@@ -28281,17 +28295,10 @@ var CredentialService = class {
     }
     this.cancelAccountLogin(provider);
     if (def.cliCommand && provider !== "antigravity" && provider !== "deepseek") {
-      let hasCli = await this.checkCliInstalled(def.cliCommand);
+      const hasCli = await this.checkCliInstalled(def.cliCommand);
       if (!hasCli) {
-        hasCli = await this.installCli(provider);
-        if (!hasCli) {
-          const installCmd = this.getCliInstallCommand(provider);
-          return {
-            success: false,
-            command: def.loginCommand,
-            message: `CLI tool "${def.cliCommand}" is not installed in PATH. Please install it with: ${installCmd || def.cliCommand}`
-          };
-        }
+        this.installCli(provider).catch(() => {
+        });
       }
     }
     const session = {
@@ -28300,6 +28307,19 @@ var CredentialService = class {
       startedAt: Date.now()
     };
     if (provider === "codex") {
+      const hasCli = await this.checkCliInstalled("codex");
+      if (!hasCli) {
+        session.status = "idle";
+        session.flow = "instructions";
+        session.message = "Codex CLI is not installed on this server. You can authenticate by pasting a session token or API key below, or install the CLI first with: npm install -g @openai/codex";
+        this.activeSessions.set(provider, { session });
+        return {
+          success: true,
+          session,
+          command: "codex login --device-auth",
+          message: session.message
+        };
+      }
       session.flow = "device_code";
       const child = spawn("codex", ["login", "--device-auth"], {
         shell: true,
@@ -28368,6 +28388,19 @@ var CredentialService = class {
       };
     }
     if (provider === "claude") {
+      const hasCli = await this.checkCliInstalled("claude");
+      if (!hasCli) {
+        session.status = "idle";
+        session.flow = "instructions";
+        session.message = "Claude CLI is not installed on this server. You can authenticate by pasting a session token below, or install the CLI first with: npm install -g @anthropic-ai/claude-code";
+        this.activeSessions.set(provider, { session });
+        return {
+          success: true,
+          session,
+          command: "claude auth login",
+          message: session.message
+        };
+      }
       session.flow = "oauth_code";
       session.requiresCodeInput = true;
       const child = spawn("claude", ["auth", "login"], {
@@ -29671,6 +29704,7 @@ Once connected, your prompts will be processed live.`
     });
     const projectSecrets = await ProjectService.getSecrets(projectId) || {};
     return new Promise((resolve) => {
+      const homeDir = process.env.HOME || "/root";
       const child = spawn2(this.command, cmdArgs, {
         cwd: workspacePath,
         shell: true,
@@ -29678,8 +29712,8 @@ Once connected, your prompts will be processed live.`
           ...process.env,
           ...projectSecrets,
           IS_SANDBOX: "1",
-          HOME: process.env.HOME || "/root",
-          PATH: `/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:${process.env.PATH || ""}`,
+          HOME: homeDir,
+          PATH: `/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin:${process.env.PATH || ""}`,
           ...apiKey && def ? { [def.envVar]: apiKey } : {}
         }
       });
@@ -29809,9 +29843,12 @@ var HarnessRegistry = class {
     ["deepseek", new CliHarness("deepseek", "deepseek")]
   ]);
   static get(providerId) {
+    if (providerId === "mock") {
+      return this.harnesses.get("claude");
+    }
     const harness = this.harnesses.get(providerId);
     if (!harness) {
-      return this.harnesses.get("mock");
+      return this.harnesses.get("claude");
     }
     return harness;
   }
