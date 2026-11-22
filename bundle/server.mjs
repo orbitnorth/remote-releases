@@ -29955,20 +29955,24 @@ Once connected, your prompts will be processed live.`
                   text: su.text_delta
                 });
               } else if (su.step_type === "tool") {
-                if (su.state === "ACTIVE") {
+                const toolName = su.tool_name || su.tool_info?.name || "tool";
+                const stepIdx = su.step_index !== void 0 ? su.step_index : su.step_number !== void 0 ? su.step_number : "";
+                const toolCallId = su.tool_info?.call_id || (stepIdx !== "" ? `call_${stepIdx}` : `tool_${toolName}`);
+                if (su.state === "ACTIVE" || su.state === "START" || su.state === "RUNNING") {
                   onEvent({
                     type: "tool_started",
                     turnId,
-                    toolName: su.tool_name || su.tool_info?.name || "tool",
-                    toolCallId: `call_${su.step_index || Date.now()}`,
-                    input: su.tool_info?.parameters
+                    toolName,
+                    toolCallId,
+                    input: su.tool_info?.parameters || su.parameters
                   });
-                } else if (su.state === "DONE") {
+                } else if (su.state === "DONE" || su.state === "COMPLETED" || su.state === "FINISHED") {
                   onEvent({
                     type: "tool_finished",
                     turnId,
-                    toolCallId: `call_${su.step_index || Date.now()}`,
-                    output: typeof su.tool_info?.output === "string" ? su.tool_info.output : JSON.stringify(su.tool_info?.output || "")
+                    toolName,
+                    toolCallId,
+                    output: typeof su.tool_info?.output === "string" ? su.tool_info.output : JSON.stringify(su.tool_info?.output ?? "")
                   });
                 }
               }
@@ -29999,9 +30003,18 @@ Once connected, your prompts will be processed live.`
             onEvent({
               type: "tool_started",
               turnId,
-              toolName: parsed.name || parsed.toolName,
+              toolName: parsed.name || parsed.toolName || "tool",
               toolCallId: parsed.id || `call_${Date.now()}`,
               input: parsed.input
+            });
+          } else if (parsed.type === "tool_result" || parsed.type === "tool_finished") {
+            onEvent({
+              type: "tool_finished",
+              turnId,
+              toolName: parsed.name || parsed.toolName,
+              toolCallId: parsed.tool_use_id || parsed.id,
+              output: typeof parsed.content === "string" ? parsed.content : JSON.stringify(parsed.content || parsed.output || ""),
+              isError: Boolean(parsed.is_error)
             });
           }
         } catch {
