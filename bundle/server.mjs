@@ -27634,7 +27634,7 @@ var init_credentialService = __esm({
         envVar: "OPENAI_API_KEY",
         cliCommand: "codex",
         testUrl: "https://api.openai.com/v1/models",
-        loginCommand: "codex login",
+        loginCommand: "codex login --device-auth",
         logoutCommand: "codex logout",
         hasAccountSupport: true,
         accountDoc: "Authenticate with your OpenAI account credentials."
@@ -27645,10 +27645,10 @@ var init_credentialService = __esm({
         envVar: "GEMINI_API_KEY",
         cliCommand: "agy",
         testUrl: "https://generativelanguage.googleapis.com/v1beta/models",
-        loginCommand: "agy auth login",
-        logoutCommand: "agy auth logout",
+        loginCommand: "agy",
+        logoutCommand: "",
         hasAccountSupport: true,
-        accountDoc: "Authenticate with your Google Account for native Gemini models."
+        accountDoc: "Authenticate with your Google Account or Google AI Studio Gemini key."
       },
       opencode: {
         id: "opencode",
@@ -27667,10 +27667,10 @@ var init_credentialService = __esm({
         envVar: "DEEPSEEK_API_KEY",
         cliCommand: "deepseek",
         testUrl: "https://api.deepseek.com/models",
-        loginCommand: "deepseek login",
-        logoutCommand: "deepseek logout",
-        hasAccountSupport: true,
-        accountDoc: "Authenticate with your DeepSeek user account or session token."
+        loginCommand: "",
+        logoutCommand: "",
+        hasAccountSupport: false,
+        accountDoc: "Authenticate with direct DeepSeek API Key (DEEPSEEK_API_KEY)."
       },
       mock: {
         id: "mock",
@@ -27773,6 +27773,7 @@ var init_credentialService = __esm({
         const suffix = key.slice(-4);
         return `${prefix}\u2022\u2022\u2022\u2022${suffix}`;
       }
+      static activeSessions = /* @__PURE__ */ new Map();
       /**
        * Inspects active account authentication status across CLI tools and session stores
        */
@@ -27812,7 +27813,41 @@ var init_credentialService = __esm({
                   if (content.primaryApiKey || content.oauthAccount) {
                     resolve({
                       signedIn: true,
-                      email: content.oauthAccount?.email || "Claude Account Active"
+                      email: content.oauthAccount?.email || "Claude Account Active",
+                      name: "Claude Subscription"
+                    });
+                    return;
+                  }
+                } catch {
+                }
+              }
+              resolve({ signedIn: false });
+            });
+          });
+        }
+        if (provider === "codex") {
+          return new Promise((resolve) => {
+            exec2("codex login status", { timeout: 2500 }, (_err, stdout, stderr) => {
+              const text = (stdout || "") + (stderr || "");
+              const lower = text.toLowerCase();
+              if (lower.includes("logged in") && !lower.includes("not logged in")) {
+                resolve({
+                  signedIn: true,
+                  email: text.trim().split("\n")[0] || "OpenAI Codex Account Active",
+                  name: "ChatGPT / Codex Subscription"
+                });
+                return;
+              }
+              const home = os.homedir();
+              const authJson = path8.join(home, ".codex", "auth.json");
+              if (fsSync7.existsSync(authJson)) {
+                try {
+                  const data = JSON.parse(fsSync7.readFileSync(authJson, "utf-8"));
+                  if (data && (data.access_token || data.refresh_token || data.tokens)) {
+                    resolve({
+                      signedIn: true,
+                      email: data.email || "OpenAI Account Active",
+                      name: "ChatGPT / Codex Subscription"
                     });
                     return;
                   }
@@ -27840,15 +27875,32 @@ var init_credentialService = __esm({
         }
         if (provider === "antigravity") {
           const home = os.homedir();
-          const agyDir = path8.join(home, ".gemini", "antigravity");
-          if (fsSync7.existsSync(agyDir)) {
+          const agyDir1 = path8.join(home, ".gemini", "antigravity");
+          const agyDir2 = path8.join(home, ".gemini", "antigravity-cli");
+          const hasGeminiKey = Boolean(creds.antigravity || creds.GEMINI_API_KEY || process.env.GEMINI_API_KEY);
+          if (hasGeminiKey) {
             return {
               signedIn: true,
-              email: "Google Account / Antigravity Active"
+              email: "Google AI Studio / Gemini Connected",
+              name: "Gemini 2.0 Flash / Pro"
+            };
+          }
+          if (fsSync7.existsSync(agyDir1) || fsSync7.existsSync(agyDir2)) {
+            return {
+              signedIn: true,
+              email: "Google Account / Antigravity Active",
+              name: "Antigravity CLI Agent"
             };
           }
         }
         return { signedIn: false };
+      }
+      /**
+       * Retrieves active login session for a provider
+       */
+      static getLoginSession(provider) {
+        const entry = this.activeSessions.get(provider);
+        return entry ? entry.session : null;
       }
       /**
        * Retrieves comprehensive auth status per provider (combining Account + API Key + CLI)
@@ -27862,6 +27914,7 @@ var init_credentialService = __esm({
           const key = await this.getApiKey(p, projectId);
           const hasCli = await this.checkCliInstalled(def.cliCommand);
           const accountAuth = await this.checkAccountStatus(p);
+          const activeSession = this.getLoginSession(p);
           const preferred = creds[`preferred_${p}`];
           let authMethod = "none";
           if (preferred === "account" && accountAuth.signedIn) {
@@ -27888,58 +27941,317 @@ var init_credentialService = __esm({
             accountName: accountAuth.name,
             accountStatus: accountAuth.signedIn ? "signed_in" : "signed_out",
             hasAccountSupport: def.hasAccountSupport,
-            loginCommand: def.loginCommand
+            loginCommand: def.loginCommand,
+            activeSession: activeSession || void 0
           };
         }
         return statuses;
       }
       /**
-       * Launches or prepares account authentication for a provider
+       * Cancels active interactive login session
+       */
+      static cancelAccountLogin(provider) {
+        const entry = this.activeSessions.get(provider);
+        if (entry) {
+          if (entry.timeout) clearTimeout(entry.timeout);
+          if (entry.child && !entry.child.killed) {
+            try {
+              entry.child.kill("SIGTERM");
+            } catch {
+            }
+          }
+          this.activeSessions.delete(provider);
+        }
+      }
+      /**
+       * Launches interactive account authentication for a provider
        */
       static async triggerAccountLogin(provider) {
         const def = PROVIDER_DEFINITIONS[provider];
-        if (!def || !def.loginCommand) {
+        if (!def) {
           return {
             success: false,
             command: "",
-            message: `Account authentication not supported for ${provider}`
+            message: `Provider ${provider} not found`
           };
         }
-        let hasCli = await this.checkCliInstalled(def.cliCommand);
-        if (!hasCli) {
-          hasCli = await this.installCli(provider);
+        this.cancelAccountLogin(provider);
+        if (def.cliCommand) {
+          let hasCli = await this.checkCliInstalled(def.cliCommand);
           if (!hasCli) {
-            const installCmd = this.getCliInstallCommand(provider);
-            return {
-              success: false,
-              command: def.loginCommand,
-              message: `CLI tool "${def.cliCommand}" is not installed in PATH. Please install it with: ${installCmd || def.cliCommand}`
-            };
+            hasCli = await this.installCli(provider);
+            if (!hasCli) {
+              const installCmd = this.getCliInstallCommand(provider);
+              return {
+                success: false,
+                command: def.loginCommand,
+                message: `CLI tool "${def.cliCommand}" is not installed in PATH. Please install it with: ${installCmd || def.cliCommand}`
+              };
+            }
           }
         }
-        try {
-          let runCmd = def.loginCommand;
-          if (process.platform !== "win32") {
-            runCmd = `export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; ${def.loginCommand}`;
-          }
-          const child = spawn(runCmd, {
+        const session = {
+          provider,
+          status: "pending",
+          startedAt: Date.now()
+        };
+        if (provider === "codex") {
+          session.flow = "device_code";
+          const child = spawn("codex", ["login", "--device-auth"], {
             shell: true,
-            detached: true,
-            stdio: "ignore"
+            env: {
+              ...process.env,
+              PATH: `/usr/local/bin:$HOME/.local/bin:${process.env.PATH || ""}`
+            }
           });
-          child.unref();
+          const entry = {
+            session,
+            child
+          };
+          this.activeSessions.set(provider, entry);
+          let buffer = "";
+          const onData = (data) => {
+            buffer += data.toString();
+            const urlMatch = buffer.match(/https:\/\/[^\s"'<>]+/);
+            const codeMatch = buffer.match(/([A-Z0-9]{4,5}-[A-Z0-9]{4,5})/);
+            if (urlMatch && !session.authUrl) {
+              session.authUrl = urlMatch[0];
+            }
+            if (codeMatch && !session.userCode) {
+              session.userCode = codeMatch[0];
+            }
+          };
+          child.stdout?.on("data", onData);
+          child.stderr?.on("data", onData);
+          child.on("exit", async (code) => {
+            if (code === 0) {
+              session.status = "completed";
+              session.message = "Successfully authenticated with OpenAI Codex account!";
+              const creds = await this.getAllCredentials();
+              creds["account_codex"] = {
+                signedIn: true,
+                email: "ChatGPT / OpenAI Account Session",
+                updatedAt: Date.now()
+              };
+              creds["preferred_codex"] = "account";
+              await JsonStore.write(this.getCredentialsPath(), creds);
+            } else if (session.status !== "completed") {
+              session.status = "failed";
+              session.error = `Codex login exited with code ${code}`;
+            }
+          });
+          entry.timeout = setTimeout(() => {
+            this.cancelAccountLogin(provider);
+          }, 15 * 60 * 1e3);
+          await new Promise((resolve) => {
+            const interval = setInterval(() => {
+              if (session.authUrl && session.userCode) {
+                clearInterval(interval);
+                resolve();
+              }
+            }, 150);
+            setTimeout(() => {
+              clearInterval(interval);
+              resolve();
+            }, 2200);
+          });
           return {
             success: true,
-            command: def.loginCommand,
-            message: `Launched "${def.loginCommand}". Complete sign-in in the opened browser window, then refresh status.`
+            session,
+            command: "codex login --device-auth",
+            message: session.userCode ? `One-time code: ${session.userCode}. Complete sign-in in the opened browser link.` : "Codex device authentication initiated. Open the URL to authorize."
+          };
+        }
+        if (provider === "claude") {
+          session.flow = "oauth_code";
+          session.requiresCodeInput = true;
+          const child = spawn("claude", ["auth", "login"], {
+            shell: true,
+            stdio: ["pipe", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              PATH: `/usr/local/bin:$HOME/.local/bin:${process.env.PATH || ""}`
+            }
+          });
+          const entry = {
+            session,
+            child
+          };
+          this.activeSessions.set(provider, entry);
+          let buffer = "";
+          const onData = (data) => {
+            buffer += data.toString();
+            const urlMatch = buffer.match(/https:\/\/claude\.ai\/oauth\/authorize\S+/);
+            if (urlMatch && !session.authUrl) {
+              session.authUrl = urlMatch[0];
+              session.status = "awaiting_code";
+            }
+          };
+          child.stdout?.on("data", onData);
+          child.stderr?.on("data", onData);
+          child.on("exit", async (code) => {
+            if (code === 0) {
+              session.status = "completed";
+              session.message = "Successfully authenticated with Claude Code account!";
+              const creds = await this.getAllCredentials();
+              creds["account_claude"] = {
+                signedIn: true,
+                email: "Claude Pro/Team Session",
+                updatedAt: Date.now()
+              };
+              creds["preferred_claude"] = "account";
+              await JsonStore.write(this.getCredentialsPath(), creds);
+            } else if (session.status !== "completed") {
+              session.status = "failed";
+              session.error = `Claude auth login exited with code ${code}`;
+            }
+          });
+          entry.timeout = setTimeout(() => {
+            this.cancelAccountLogin(provider);
+          }, 15 * 60 * 1e3);
+          await new Promise((resolve) => {
+            const interval = setInterval(() => {
+              if (session.authUrl) {
+                clearInterval(interval);
+                resolve();
+              }
+            }, 150);
+            setTimeout(() => {
+              clearInterval(interval);
+              resolve();
+            }, 2200);
+          });
+          return {
+            success: true,
+            session,
+            command: "claude auth login",
+            message: "Open the authorization link in your browser, then paste the code below."
+          };
+        }
+        if (provider === "antigravity") {
+          session.status = "idle";
+          session.flow = "instructions";
+          session.authUrl = "https://aistudio.google.com/app/apikey";
+          session.message = "Antigravity models run on Google Gemini 2.0. Connect with a free Google AI Studio key (instant 1-click) or enter your Google OAuth session token below.";
+          return {
+            success: true,
+            session,
+            command: "agy",
+            message: session.message
+          };
+        }
+        if (provider === "opencode") {
+          session.status = "idle";
+          session.flow = "token";
+          session.message = 'Enter your OpenCode account token or API key below, or run "opencode auth login" in terminal.';
+          return {
+            success: true,
+            session,
+            command: "opencode auth login",
+            message: session.message
+          };
+        }
+        session.status = "idle";
+        session.flow = "token";
+        session.authUrl = "https://platform.deepseek.com/api_keys";
+        session.message = "DeepSeek authenticates via direct API Key.";
+        return {
+          success: true,
+          session,
+          command: "",
+          message: session.message
+        };
+      }
+      /**
+       * Confirms code for interactive OAuth flows (e.g. Claude Code)
+       */
+      static async confirmAccountCode(provider, code) {
+        const entry = this.activeSessions.get(provider);
+        if (!entry || !entry.child || entry.child.killed) {
+          return {
+            success: false,
+            message: "No active login session waiting for confirmation code."
+          };
+        }
+        const trimmed = code.trim();
+        if (!trimmed) {
+          return { success: false, message: "Authorization code cannot be empty." };
+        }
+        try {
+          entry.child.stdin?.write(`${trimmed}
+`);
+          await new Promise((resolve) => {
+            const timer = setTimeout(resolve, 5e3);
+            entry.child?.once("exit", () => {
+              clearTimeout(timer);
+              resolve();
+            });
+          });
+          const accountStatus = await this.checkAccountStatus(provider);
+          if (accountStatus.signedIn || entry.session.status === "completed") {
+            entry.session.status = "completed";
+            return {
+              success: true,
+              message: `Successfully authenticated with ${PROVIDER_DEFINITIONS[provider]?.name || provider}!`
+            };
+          }
+          return {
+            success: true,
+            message: "Code submitted. Refreshing account status..."
           };
         } catch (err) {
           return {
             success: false,
-            command: def.loginCommand,
-            message: `Failed to launch login process: ${err.message}`
+            message: `Failed to submit code: ${err.message}`
           };
         }
+      }
+      /**
+       * Directly saves a long-lived account/session token for a provider
+       */
+      static async saveAccountToken(provider, token) {
+        const trimmed = token.trim();
+        if (!trimmed) {
+          return { success: false, message: "Token cannot be empty" };
+        }
+        const creds = await this.getAllCredentials();
+        creds[`account_${provider}`] = {
+          signedIn: true,
+          email: `${PROVIDER_DEFINITIONS[provider]?.name || provider} Token Session`,
+          token: trimmed,
+          updatedAt: Date.now()
+        };
+        creds[`preferred_${provider}`] = "account";
+        if (provider === "claude") {
+          creds.claude = trimmed;
+          try {
+            const claudeJson = path8.join(os.homedir(), ".claude.json");
+            let current = {};
+            if (fsSync7.existsSync(claudeJson)) {
+              current = JSON.parse(fsSync7.readFileSync(claudeJson, "utf-8"));
+            }
+            current.primaryApiKey = trimmed;
+            fsSync7.writeFileSync(claudeJson, JSON.stringify(current, null, 2));
+          } catch {
+          }
+        } else if (provider === "codex") {
+          creds.codex = trimmed;
+          exec2(
+            `export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; printf "%s" "${trimmed}" | codex login --with-access-token 2>/dev/null || true`
+          );
+        } else if (provider === "antigravity") {
+          creds.antigravity = trimmed;
+          creds.GEMINI_API_KEY = trimmed;
+        } else if (provider === "deepseek") {
+          creds.deepseek = trimmed;
+        } else if (provider === "opencode") {
+          creds.opencode = trimmed;
+        }
+        await JsonStore.write(this.getCredentialsPath(), creds);
+        return {
+          success: true,
+          message: `Saved session token for ${PROVIDER_DEFINITIONS[provider]?.name || provider}!`
+        };
       }
       /**
        * Logs out account session for a provider
@@ -29374,6 +29686,51 @@ function createApiRouter() {
       }
       const result = await CredentialService.triggerAccountLogin(provider);
       res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  router.get("/harnesses/account/session/:provider", async (req, res) => {
+    try {
+      const provider = req.params.provider;
+      const session = CredentialService.getLoginSession(provider);
+      res.json({ success: true, session });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  router.post("/harnesses/account/confirm", async (req, res) => {
+    try {
+      const { provider, code } = req.body;
+      if (!provider || !code) {
+        return res.status(400).json({ error: "Provider and authorization code are required" });
+      }
+      const result = await CredentialService.confirmAccountCode(provider, code);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  router.post("/harnesses/account/token", async (req, res) => {
+    try {
+      const { provider, token } = req.body;
+      if (!provider || !token) {
+        return res.status(400).json({ error: "Provider and token are required" });
+      }
+      const result = await CredentialService.saveAccountToken(provider, token);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  router.post("/harnesses/account/cancel", async (req, res) => {
+    try {
+      const { provider } = req.body;
+      if (!provider) {
+        return res.status(400).json({ error: "Provider is required" });
+      }
+      CredentialService.cancelAccountLogin(provider);
+      res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

@@ -60,7 +60,23 @@ fi
 NODE_VER=$(node -v)
 echo -e "${GREEN}[✓]${NC} Node.js ready: ${NODE_VER}"
 
-# 4. Check / Install PM2
+# 4. Swap Memory Configuration (prevents OOM on 1GB-2GB RAM VPS)
+if [ -f /proc/meminfo ]; then
+  TOTAL_MEM=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+  SWAP_TOTAL=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
+  if [ "$TOTAL_MEM" -lt 2500000 ] && [ "$SWAP_TOTAL" -eq 0 ]; then
+    echo -e "${YELLOW}[*] Low RAM droplet detected (<2.5GB) without swap. Creating 2GB swapfile...${NC}"
+    fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile || true
+    if ! grep -q "/swapfile" /etc/fstab; then
+      echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    fi
+  fi
+fi
+
+# 5. Check / Install PM2
 echo -e "${BLUE}==>${NC} Checking PM2 process supervisor..."
 if ! command -v pm2 >/dev/null 2>&1; then
   echo -e "${YELLOW}[*] Installing PM2 globally...${NC}"
@@ -68,9 +84,21 @@ if ! command -v pm2 >/dev/null 2>&1; then
 fi
 echo -e "${GREEN}[✓]${NC} PM2 ready: $(pm2 -v)"
 
-# 5. Install AI Agent Harness CLIs (Claude, Antigravity, OpenCode, Codex)
+# 6. Install AI Agent Harness CLIs (Claude, Antigravity, OpenCode, Codex)
 echo -e "${BLUE}==>${NC} Installing AI harness CLIs (Claude Code, Antigravity, OpenCode, Codex)..."
-npm install -g @anthropic-ai/claude-code @opencode/cli@latest @openai/codex 2>/dev/null || true
+
+# Claude Code (native binary installer)
+if ! command -v claude >/dev/null 2>&1; then
+  echo "    Installing Anthropic Claude Code CLI..."
+  curl -fsSL https://claude.ai/install.sh | bash 2>/dev/null || true
+  if [ -f "$HOME/.local/bin/claude" ]; then
+    ln -sf "$HOME/.local/bin/claude" /usr/local/bin/claude 2>/dev/null || true
+  elif [ -f "/root/.local/bin/claude" ]; then
+    ln -sf "/root/.local/bin/claude" /usr/local/bin/claude 2>/dev/null || true
+  fi
+fi
+
+# Google Antigravity (native installer)
 if ! command -v agy >/dev/null 2>&1; then
   echo "    Installing Google Antigravity (agy) CLI..."
   curl -fsSL https://antigravity.google/cli/install.sh | bash 2>/dev/null || true
@@ -80,6 +108,24 @@ if ! command -v agy >/dev/null 2>&1; then
     ln -sf "/root/.local/bin/agy" /usr/local/bin/agy 2>/dev/null || true
   fi
 fi
+
+# OpenCode (native installer)
+if ! command -v opencode >/dev/null 2>&1; then
+  echo "    Installing OpenCode CLI..."
+  curl -fsSL https://opencode.ai/v2/install | bash 2>/dev/null || true
+  if [ -f "$HOME/.local/bin/opencode" ]; then
+    ln -sf "$HOME/.local/bin/opencode" /usr/local/bin/opencode 2>/dev/null || true
+  elif [ -f "/root/.local/bin/opencode" ]; then
+    ln -sf "/root/.local/bin/opencode" /usr/local/bin/opencode 2>/dev/null || true
+  fi
+fi
+
+# OpenAI Codex CLI
+if ! command -v codex >/dev/null 2>&1; then
+  echo "    Installing OpenAI Codex CLI..."
+  npm install -g @openai/codex 2>/dev/null || true
+fi
+
 echo -e "${GREEN}[✓]${NC} AI harness CLIs ready: claude, agy, opencode, codex"
 
 # 6. Extract / Deploy Standalone Program Bundle
